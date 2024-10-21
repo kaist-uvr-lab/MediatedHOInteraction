@@ -1,0 +1,27 @@
+
+--extra-index-url https://download.pytorch.org/whl/cu117
+torch==1.13.1+cu117
+--extra-index-url https://download.pytorch.org/whl/cu117
+torchvision==0.14.1+cu117 
+--extra-index-url https://download.pytorch.org/whl/cu117
+torchaudio==0.13.1
+
+chumpy==0.70
+imageio==2.23.0
+matplotlib==3.6.2
+numpy==1.23
+Pillow==9.3.0
+pyrender==0.1.45
+scipy==1.10.0
+termcolor==2.2.0
+tqdm==4.64.1
+typing-extensions
+certifi
+six
+PyYAML
+websockets
+
+# additional update
+mediapipe==0.9.0
+opencv-contrib-python==4.7.0.68
+opencv-python==4.7.0.68
