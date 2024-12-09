@@ -12,7 +12,9 @@ class Config:
 
     continue_train = False
     reInit_optimizer = False
-    checkpoint = './handtracker/checkpoint/SAR_r5_AGCN4_cross_2layer_extraTrue_resnet34_Epochs50/checkpoint.pth'
+    checkpoint = './handtracker/checkpoint/SAR_AGCN4_cross_wBGaug_extraTrue_resnet34_s0_Epochs50/checkpoint.pth'
+    # checkpoint = './handtracker/checkpoint/SARTE_wHOG_s0_extraTrue_resnet34_s0_Epochs50/checkpoint.pth'
+
     # checkpoint = './handtracker/checkpoint/SAR-R34-S2-65-67.pth'  # put the path of the trained model's weights here
 
     extra_width = 64

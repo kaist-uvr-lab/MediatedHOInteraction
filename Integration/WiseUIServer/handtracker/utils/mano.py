@@ -4,7 +4,7 @@ import sys, os
 sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), "../mano_data"))
 from manopth.manolayer import ManoLayer
 
-print(sys.path)
+
 class MANO(object):
     def __init__(self):
         self.layer = self.get_layer()

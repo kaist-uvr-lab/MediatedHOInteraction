@@ -4,3 +4,8 @@
 /Integration/WiseUIServer/output/*
 /Integration/WiseUIServer/objtracker/Yolov8_extraobjshape.v2i.yolov8
 /Integration/WiseUIServer/handtracker/mano_data/mano/models
+/Integration/WiseUIServer/handtracker/checkpoint
+/Integration/WiseUIServer/backup
+/Integration/WiseUIServer/assets
+/Integration/WiseUIServer/pkl_test
+/Integration/WiseUIAppUnity/builds

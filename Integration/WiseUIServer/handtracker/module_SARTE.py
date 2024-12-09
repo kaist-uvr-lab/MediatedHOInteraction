@@ -60,7 +60,6 @@ def encode_hand_data(hand_result):
 
 class HandTracker():
     def __init__(self):
-        print("here")
         self.tester = Tester()
         self.tester._make_model()
         # self.detector = HandDetector()
@@ -98,9 +97,116 @@ class HandTracker():
 
         self.prev_coord = None
 
-        self.winname = "test"
-        cv2.namedWindow(self.winname)
-        cv2.moveWindow(self.winname, 1920, 30)
+        self.winname = "our result"
+        # cv2.namedWindow(self.winname)
+        # cv2.moveWindow(self.winname, 2640, 400)
+
+        ## update target bbox for every 10 frame, move current bbox to target frame for 2 pixel per frame.
+        self.bbox_cooltime = 10
+        self.bbox_cnt = 0
+        self.bbox_togo = None
+        self.pixelperframe = 2
+
+
+    def Process_single_newroi(self, img): # input : img_cv
+        t0 = time.time()
+        if img.shape[-1] == 4:
+            img = img[:, :, :-1]
+        image_height, image_width = img.shape[0], img.shape[1]  # (360, 640)
+
+        # img_cv = np.copy(img)
+
+        ## new hand detection. need to add re-initialization
+
+        bbox = self.default_bbox
+        self.bbox_cnt += 1
+
+        if self.bbox_cnt > self.bbox_cooltime:
+            if self.prev_coord is not None:
+                self.bbox_togo = self.calc_bbox_coords(image_width, image_height, self.prev_coord)
+                self.bbox_cnt = 0
+
+        if self.bbox_togo is not None:
+            for idx in range(2):
+                if np.abs(bbox[idx] - self.bbox_togo[idx]) > 1:
+                    if bbox[idx] > self.bbox_togo[idx]:
+                        bbox[idx] -= self.pixelperframe
+                    else:
+                        bbox[idx] += self.pixelperframe
+                else:
+                    bbox[idx] = self.bbox_togo[idx]
+
+            self.default_bbox = bbox
+            if bbox[0:2] == self.bbox_togo[0:2]:
+                self.bbox_togo = None
+
+
+        img_crop, img2bb_trans, bb2img_trans, _, _, = augmentation_real(img, bbox, flip=False)
+        # cv2.imshow('img_crop', img_crop/255.0)
+        # cv2.waitKey(1)
+
+
+        # transform img
+        img_pil = cv2pil(img_crop)
+        img = self.transform(img_pil)
+        img = torch.unsqueeze(img, 0).type(torch.float32)
+        inputs = {'img': img}
+
+
+        if cfg.extra:
+            # self.extra_uvd = np.copy(self.extra_uvd_right)
+            self.extra_uvd = np.zeros((21, 3), dtype=np.float32)
+
+            # affine transform x,y coordinates with current crop info
+            uv1 = np.concatenate((self.extra_uvd[:, :2], np.ones_like(self.extra_uvd[:, :1])), 1)
+            self.extra_uvd[:, :2] = np.dot(img2bb_trans, uv1.transpose(1, 0)).transpose(1, 0)[:, :2]
+
+            # normalize uv, depth is already relative value
+            self.extra_uvd[:, :2] = self.extra_uvd[:, :2] / (cfg.input_img_shape[0] // 2) - 1
+
+            extra_hm = inference_extraHM(self.extra_uvd, self.idx, reinit_num=10)
+            inputs['extra'] = torch.unsqueeze(torch.from_numpy(extra_hm), dim=0)
+            self.idx += 1
+
+        t1 = time.time()
+        with torch.no_grad():
+            outs = self.tester.model(inputs).detach()
+        t2 = time.time()
+
+        outs = outs.to("cpu", non_blocking=True)
+        coords_uvd = outs.numpy()[0]
+
+        # normalized value to uv(pixel) range
+        coords_uvd[:, :2] = (coords_uvd[:, :2] + 1) * (cfg.input_img_shape[0] // 2)
+
+        # back to original image
+        uv1 = np.concatenate((coords_uvd[:, :2], np.ones_like(coords_uvd[:, :1])), 1)
+        coords_uvd[:, :2] = np.dot(bb2img_trans, uv1.transpose(1, 0)).transpose(1, 0)[:, :2]
+
+
+        if cfg.extra:
+            self.extra_uvd_right = np.copy(coords_uvd[cfg.num_vert:])
+
+        # restore depth value after passing extra pose
+        coords_uvd[:, 2] = coords_uvd[:, 2] * cfg.depth_box # + root_depth (we don't know here)
+
+        # mesh_uvd = copy.deepcopy(all_uvd[:cfg.num_vert])  # (778, 3)
+        coords_uvd = coords_uvd[cfg.num_vert:]   # (21, 3)
+
+        t3 = time.time()
+        # print("preprocess, inference, postprocess : ", t1-t0, t2-t1, t3-t2)
+
+        ### visualize output in server ###
+        # img_cv = draw_2d_skeleton(img_cv, coords_uvd)
+        # cv2.imshow(self.winname, img_cv)
+        # cv2.waitKey(1)
+
+        self.prev_coord = np.copy(coords_uvd)
+
+        return coords_uvd
+
+
+
 
 
     def Process_single_nomp(self, img): # input : img_cv
@@ -110,7 +216,7 @@ class HandTracker():
         imgSize = (img.shape[0], img.shape[1])  # (360, 640)
 
         # image from hololens2 is fliped both direction
-        img = cv2.flip(img, 0)
+        # img = cv2.flip(img, 0)
         img_cv = np.copy(img)
 
         ## new hand detection. need to add re-initialization
@@ -121,8 +227,8 @@ class HandTracker():
 
 
         img_crop, img2bb_trans, bb2img_trans, _, _, = augmentation_real(img, bbox, flip=False)
-        # cv2.imshow('img_crop', img_crop/255.0)
-        # cv2.waitKey(1)
+        cv2.imshow('img_crop', img_crop/255.0)
+        cv2.waitKey(1)
 
 
         # transform img
@@ -175,9 +281,9 @@ class HandTracker():
         # print("preprocess, inference, postprocess : ", t1-t0, t2-t1, t3-t2)
 
         ### visualize output in server ###
-        # img_cv = draw_2d_skeleton(img_cv, coords_uvd)
-        # cv2.imshow(self.winname, img_cv)
-        # cv2.waitKey(1)
+        img_cv = draw_2d_skeleton(img_cv, coords_uvd)
+        cv2.imshow(self.winname, img_cv)
+        cv2.waitKey(1)
 
         return coords_uvd
 
@@ -282,176 +388,17 @@ class HandTracker():
             return joint_uvd_list
 
 
-    def Process(self, img): # input : img_cv
-        t0 = time.time()
-        if img.shape[-1] == 4:
-            img = img[:, :, :-1]
-        imgSize = (img.shape[0], img.shape[1])  # (360, 640)
+    def calc_bbox_coords(self, image_width, image_height, coords):
+        x_min = np.min(coords[:, 0])
+        y_min = np.min(coords[:, 1])
+        x_max = np.max(coords[:, 0])
+        y_max = np.max(coords[:, 1])
 
-        img_cv = np.copy(img)
-        ### hand detection with mediapipe (17ms)
-        ## currently extracting only right-side hand
-        bbox_list, img_crop_list, img2bb_trans_list, bb2img_trans_list, flag_flip_list = self.extract_singlehand(img)
+        x_c = (x_min + x_max) / 2
+        y_c = (y_min + y_max) / 2
 
-        t1 = time.time()
-        joint_uvd_list = []
-        # mesh_uvd_list = []
-        if len(bbox_list) == 0:
-            print("no bbox, return zero joint")
-            joint_uvd = np.zeros((21, 3), dtype=np.float32)
-            joint_uvd_list.append(joint_uvd)
-            return joint_uvd_list
-
-        else:
-            for bbox, img_crop, img2bb_trans, bb2img_trans, flag_flip in \
-                    zip(bbox_list, img_crop_list, img2bb_trans_list, bb2img_trans_list, flag_flip_list):
-                # crop_name = 'crop_{}'.format(debug_i)
-                # debug_i += 1
-                # cv2.imshow(crop_name, img_crop/255.)
-                # cv2.waitKey(1)
-
-
-                # transform img
-                img_pil = cv2pil(img_crop)
-                img = self.transform(img_pil)
-                img = torch.unsqueeze(img, 0).type(torch.float32)
-                inputs = {'img': img}
-
-                if cfg.extra:
-                    if flag_flip:
-                        self.extra_uvd = np.copy(self.extra_uvd_left)
-                    else:
-                        self.extra_uvd = np.copy(self.extra_uvd_right)
-
-                    # affine transform x,y coordinates with current crop info
-                    uv1 = np.concatenate((self.extra_uvd[:, :2], np.ones_like(self.extra_uvd[:, :1])), 1)
-                    self.extra_uvd[:, :2] = np.dot(img2bb_trans, uv1.transpose(1, 0)).transpose(1, 0)[:, :2]
-
-                    # normalize uv, depth is already relative value
-                    self.extra_uvd[:, :2] = self.extra_uvd[:, :2] / (cfg.input_img_shape[0] // 2) - 1
-
-                    extra_hm = inference_extraHM(self.extra_uvd, self.idx, reinit_num=10)
-                    inputs['extra'] = torch.unsqueeze(torch.from_numpy(extra_hm), dim=0)
-                    self.idx += 1
-                t2 = time.time()
-                with torch.no_grad():
-                    outs = self.tester.model(inputs)
-
-                t3 = time.time()
-                outs = {k: v.cpu().numpy() for k, v in outs.items()}
-                coords_uvd = outs['coords'][0]
-
-                # normalized value to uv(pixel) range
-                coords_uvd[:, :2] = (coords_uvd[:, :2] + 1) * (cfg.input_img_shape[0] // 2)
-
-                # back to original image
-                uv1 = np.concatenate((coords_uvd[:, :2], np.ones_like(coords_uvd[:, :1])), 1)
-                coords_uvd[:, :2] = np.dot(bb2img_trans, uv1.transpose(1, 0)).transpose(1, 0)[:, :2]
-
-                if cfg.extra:
-                    if flag_flip:
-                        self.extra_uvd_left = np.copy(coords_uvd[cfg.num_vert:])
-                    else:
-                        self.extra_uvd_right = np.copy(coords_uvd[cfg.num_vert:])
-
-                # restore depth value after passing extra pose
-                coords_uvd[:, 2] = coords_uvd[:, 2] * cfg.depth_box # + root_depth (we don't know)
-
-                # mesh_uvd = copy.deepcopy(all_uvd[:cfg.num_vert])  # (778, 3)
-                joint_uvd = coords_uvd[cfg.num_vert:]   # (21, 3)
-                if flag_flip:
-                    joint_uvd[:, 0] = imgSize[1] - joint_uvd[:, 0]
-                    # mesh_uvd[:, 0] = imgSize[1] - mesh_uvd[:, 0]
-
-                joint_uvd_list.append(joint_uvd)
-                # mesh_uvd_list.append(mesh_uvd)
-
-                t4 = time.time()
-
-            ### visualize output in server ###
-            img_joint = np.copy(img_cv)
-            for joint_uvd in joint_uvd_list:
-                img_joint = draw_2d_skeleton(img_joint, joint_uvd)
-            cv2.imshow('img_cv', img_joint)
-            cv2.waitKey(1)
-
-            print("detect, preprocess, inference, postprocess : ", t1 - t0, t2 - t1, t3-t2, t4-t3)
-
-            return joint_uvd_list
-
-    def extract_singlehand(self, img, imgSize):
-        img_height = imgSize[0]
-        img_width = imgSize[1]
-
-        image = cv2.flip(img, 1)
-        results = self.mediahand.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-        if results.multi_hand_landmarks is not None:
-            for hand_landmarks in results.multi_hand_landmarks:
-                # Bounding box calculation
-                bbox = self.calc_bounding_rect(img_width, img_height, hand_landmarks)
-
-                img_crop_list, img2bb_trans_list, bb2img_trans_list = [], [], []
-                img_crop, img2bb_trans, bb2img_trans, _, _, = augmentation_real(img, bbox, flip=False)
-
-                # cv2.imshow('img_crop', img_crop/255.0)
-                # cv2.waitKey(1)
-
-                bbox_list = [bbox]
-                img_crop_list.append(img_crop)
-                img2bb_trans_list.append(img2bb_trans)
-                bb2img_trans_list.append(bb2img_trans)
-                flag_flip_list = [False]
-
-                return bbox_list, img_crop_list, img2bb_trans_list, bb2img_trans_list, flag_flip_list
-        else:
-            bbox_list, img_crop_list, img2bb_trans_list, bb2img_trans_list, flag_flip_list = [], [], [], [], []
-            return bbox_list, img_crop_list, img2bb_trans_list, bb2img_trans_list, flag_flip_list
-
-    def extract_twohand(self, img):
-        t1 = time.time()
-
-        img_height, img_width, _ = img.shape
-
-        image = cv2.flip(img, 1)
-        results = self.mediahand.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-        t2 = time.time()
-
-        bbox_list = []
-        if results.multi_hand_landmarks is not None:
-            for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                # Bounding box calculation
-                bbox = self.calc_bounding_rect(img_width, img_height, hand_landmarks)
-                bbox_list.append(bbox)
-
-        t3 = time.time()
-        if len(bbox_list) == 0:
-            print("no bounding box")
-            output = [], [], [], [], []
-        else:
-            output = self.create_input(img, bbox_list, img_width)
-
-        t4 = time.time()
-        print("mediapipe t : ", t2 - t1)        # 20ms
-        print("create input t : ", t4 - t3)     # 4ms
-        return output
-
-    def calc_bounding_rect(self, image_width, image_height, landmarks):
-        landmark_array = np.empty((0, 2), int)
-        for _, landmark in enumerate(landmarks.landmark):
-            landmark_x = min(int(landmark.x * image_width), image_width - 1)
-            landmark_y = min(int(landmark.y * image_height), image_height - 1)
-            landmark_point = [np.array((landmark_x, landmark_y))]
-            landmark_array = np.append(landmark_array, landmark_point, axis=0)
-
-        x, y, w, h = cv2.boundingRect(landmark_array)
-        # x, y : upper right point
-        x = image_width - x
-
-        margin = self.crop_size / 4.0
-        x_min = max(0, x - margin * 3)
-        y_min = max(0, y - margin)
+        x_min = max(0, x_c - self.crop_size / 2)  # *3)
+        y_min = max(0, y_c - self.crop_size / 2)
 
         if (x_min + self.crop_size) > image_width:
             x_min = image_width - self.crop_size
@@ -461,6 +408,7 @@ class HandTracker():
         bbox = [x_min, y_min, self.crop_size, self.crop_size]
 
         return bbox
+
 
     def calc_bounding_rect_coords(self, image_width, image_height, coords):
         x, y, w, h = cv2.boundingRect(coords[:, :2])
