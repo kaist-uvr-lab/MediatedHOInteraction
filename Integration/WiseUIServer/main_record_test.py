@@ -24,12 +24,6 @@ from PyQt5.QtGui import QPixmap, QPainter, QColor, QFont
 from threading import Thread
 import pickle
 
-"""
-pen은 object 인식 안됨. object 유무 관계 없이 action 인식 해보고,
-안되면 pen용 flag 따로, apple, cup, key용 따로 세팅.
-
-test dataset 수집해서 TP, FP, TN, FN counting해서 시각화?
-"""
 
 ## args ##
 flag_mediapipe = False
@@ -39,13 +33,6 @@ flag_vis_obj = False
 ## test options ##
 flag_natural = True
 SUBJECT = 3
-
-# 0 : 조우진 19 13.5 6.5
-# 1 : 하태욱
-
-# 3 : 신윤석
-# 4 : 김석영 18.5 13 6.5 cyl
-
 
 # HoloLens address
 host = '192.168.1.31'
