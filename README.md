@@ -2,6 +2,7 @@
 - ARRC-UVR Wise UI 통합 프로젝트, Mediated Hand-Object Interaction.
 - Git for Server-side. 
 - Client(HMD)-side Unity project can be found in [WiseUI gitlab](https://gitlab.com/arrc-uvr/wiseui)
+- Full source in GitLab
 
 ## Installation
 ### Requirements
