@@ -22,20 +22,13 @@ import socket
 import multiprocessing as mp
 
 
-"""
-pen은 object 인식 안됨. object 유무 관계 없이 action 인식 해보고,
-안되면 pen용 flag 따로, apple, cup, key용 따로 세팅.
-
-test dataset 수집해서 TP, FP, TN, FN counting해서 시각화?
-"""
-
 ## args ##
 flag_mediapipe = False
 flag_gesture = True
 
-# HoloLens address
-host = '192.168.1.31'
-# host = '127.0.0.1'
+
+# Set HoloLens2 wifi address
+host = '192.168.50.31'
 
 
 # Calibration path (must exist but can be empty)
