@@ -27,7 +27,7 @@ flag_mediapipe = False
 flag_gesture = True
 
 
-# Set HoloLens2 wifi address
+## Set HoloLens2 wifi address ##
 host = '192.168.50.31'
 
 
