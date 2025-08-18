@@ -1,6 +1,6 @@
 import copy
 import os
-os.environ["PYOPENGL_PLATFORM"] = "OSMesa"
+# os.environ["PYOPENGL_PLATFORM"] = "OSMesa"
 import sys
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))     # append current dir to PATH
 sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), "../"))

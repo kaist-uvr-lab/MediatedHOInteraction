@@ -2,8 +2,8 @@
 WiseUIServer/records/*
 WiseUIServer/output/*
 WiseUIServer/backup
-WiseUIServer/assets
-WiseUIServer/pkl_test
+WiseUIServer/backup_V2
+
 
 WiseUIServer/objecttracker/Yolov8_extraobjshape.v2i.yolov8/*
 
@@ -11,6 +11,9 @@ WiseUIServer/handtracker/mano_data/mano/models
 WiseUIServer/handtracker/checkpoint
 WiseUIServer/handtracker_wilor/pretrained_models/wilor_final.ckpt
 WiseUIServer/handtracker_wilor/pretrained_models/wilor_final.bak
+
+*/__pycache__
+*/*/__pycache__
 
 # =============== #
 # Unity generated #
