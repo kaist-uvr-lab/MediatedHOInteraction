@@ -47,13 +47,12 @@ if flag_rsrecord:
 
 
 class HandTracker_wilor():
-    def __init__(self, img_w=640, img_h=360):
+    def __init__(self, img_w=640, img_h=360, checkpoint_path='./pretrained_models/wilor_final.ckpt', cfg_path='./pretrained_models/model_config.yaml', YOLO_path='./pretrained_models/detector.pt'):
 
         print("check input image scale. default : img_w=640, img_h=360")
 
-        self.model, self.model_cfg = load_wilor(checkpoint_path='./pretrained_models/wilor_final.ckpt',
-                                      cfg_path='./pretrained_models/model_config.yaml')
-        self.detector = YOLO('./pretrained_models/detector.pt')
+        self.model, self.model_cfg = load_wilor(checkpoint_path=checkpoint_path, cfg_path=cfg_path)
+        self.detector = YOLO(YOLO_path)
         self.renderer = Renderer(self.model_cfg, faces=self.model.mano.faces)
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -491,6 +490,10 @@ def main():
                 if len(queue_righthand) > 9 and img_idx % 5 == 0:
                     activate_finger = identify_interacting_finger(queue_righthand.copy())
                     print("moving finger : ", activate_finger)
+
+            ## contact detection
+
+
 
 
         print("test end")
