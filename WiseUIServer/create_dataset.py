@@ -57,7 +57,7 @@ long clip :
 - cam~hand view direction : 정면, 대각 4종
 - 물체 최소 3종 (사이즈, 형태 다르게)
 - on-object/on-plane
-- Gesture speed
+- Gesture range(크게 작게)
 
 - 전체 반복 5회해서 FOLD로 활용.
 
@@ -76,14 +76,16 @@ long_actions = ['Clock', 'CClock', 'Natural']
 
 ## current stat ##
 trial = 0
+
 action = 'Up'
 finger_idx = 0       # ['thumb', 'index']
 
-duration = 1.5
+duration = 1.5      # short : 1.5 sec -> 24 frame, long : 10 sec -> ?
+
+
 
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FPS, 60)
-
 
 save_dir = f'dataset/trial{trial}/{action}_{fingers[finger_idx]}'
 os.makedirs(save_dir, exist_ok=True)

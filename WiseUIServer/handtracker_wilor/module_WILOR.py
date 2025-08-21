@@ -28,22 +28,39 @@ import pyrealsense2 as rs
 LIGHT_PURPLE = (0.25098039, 0.274117647, 0.65882353)
 prev = time.time()
 prev_label = "init"
+flag_gesture = False
+
+
 
 ## debug args ##
-flag_webcam = True
-flag_rsrecord = False
-
+flag_webcam = False
+flag_rsrecord = True
 flag_time = False
+flag_render_mesh = False
 
 if flag_rsrecord:
-    bag_path = "C:/Woojin/research/realsense/record/20250817_164753.bag"
-
     pipeline = rs.pipeline()
     config = rs.config()
 
+    ## from record
+    bag_path = "C:/Woojin/research/realsense/record/20250821_181307.bag"  # color : 640 480, depth : 640 480
     rs.config.enable_device_from_file(config, bag_path, repeat_playback=False)
-    pipeline.start(config)
+    # from realtime
+    # config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
+    profile = pipeline.start(config)
     colorizer = rs.colorizer()
+
+    depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+
+    # playback 객체를 가져와서 재생 위치를 수동으로 조정
+    device = profile.get_device()
+    playback = device.as_playback()
+    playback.set_real_time(False)  # 실시간 재생 비활성화
+
+    align_to = rs.stream.color
+    align = rs.align(align_to)
 
 
 class HandTracker_wilor():
@@ -55,12 +72,15 @@ class HandTracker_wilor():
         self.detector = YOLO(YOLO_path)
         self.renderer = Renderer(self.model_cfg, faces=self.model.mano.faces)
 
+
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         print("self.device : ", self.device)
 
         self.model = self.model.to(self.device)
         self.detector = self.detector.to(self.device)
         self.model.eval()
+
+        self.detector_obj = YOLO('./pretrained_models/yolo11m.pt').to(self.device)
 
         ## instead of dataset class, save configs
         # self.ViTdataset = ViTDetDataset(self.model_cfg)
@@ -74,7 +94,9 @@ class HandTracker_wilor():
         self.img_h = img_h
 
         ## update target bbox for every 10 frame, move current bbox to target frame for 2 pixel per frame.
-        self.bbox_cooltime = 10
+        self.det_cooltime = 10
+
+        self.obj_cnt = 0
         self.bbox_cnt = 0
         self.bbox_togo = None
         self.pixelperframe = 2
@@ -83,13 +105,17 @@ class HandTracker_wilor():
         self.boxes = None
         self.right = None
 
+        self.flag_detected = False
+
 
         ## do first iteration
         log_event("start")
         testImg = cv2.imread('./demo_img/test1.jpg')
+        testImg = cv2.resize(testImg, (640, 360))
 
         log_event("load input")
         detections = self.detect_hands(testImg, conf=0.3, verbose=False)
+        _ = self.detector_obj(testImg, verbose=False)
 
         log_event("detect")
 
@@ -245,17 +271,17 @@ class HandTracker_wilor():
 
         return merged
 
-    def detect_hands(self, testImg, conf, verbose):
+    def detect_hands(self, img, conf, verbose):
 
         self.bbox_cnt += 1
 
         ## run YOLO when ... until the hand is detected on init & every cooltime done
-        if self.boxes is None or self.bbox_cnt > self.bbox_cooltime:
+        if self.boxes is None or self.bbox_cnt > self.det_cooltime:
             # print("running YOLO")
 
             self.bbox_cnt = 0
 
-            detections = self.detector.predict(testImg, conf=conf, verbose=verbose, max_det=5)[0]
+            detections = self.detector.predict(img, conf=conf, verbose=verbose, max_det=5)[0]
 
             bboxes = []
             is_right = []
@@ -318,8 +344,8 @@ class HandTracker_wilor():
         return boxes, right
 
         # self.bbox_cnt += 1
-        # if len(self.prev_uvd) < 1 or self.bbox_cnt > self.bbox_cooltime:
-        #     results = self.detector.predict(testImg, conf=conf, verbose=verbose, max_det=5)[0]
+        # if len(self.prev_uvd) < 1 or self.bbox_cnt > self.det_cooltime:
+        #     results = self.detector.predict(img, conf=conf, verbose=verbose, max_det=5)[0]
         #     self.bbox_cnt = 0
         # else:
 
@@ -329,7 +355,7 @@ class HandTracker_wilor():
         # bbox = self.default_bbox
         # self.bbox_cnt += 1
         #
-        # if self.bbox_cnt > self.bbox_cooltime:
+        # if self.bbox_cnt > self.det_cooltime:
         #     if self.prev_coord is not None:
         #         self.bbox_togo = self.calc_bbox_coords(image_width, image_height, self.prev_coord)
         #         self.bbox_cnt = 0
@@ -350,6 +376,52 @@ class HandTracker_wilor():
 
         ##
 
+
+    def detect_objs(self, img, depth_image_float, d_wrist):
+        self.obj_cnt += 1
+
+        ## run YOLO when every cooltime
+        if self.obj_cnt > self.det_cooltime:
+            self.flag_detected = True
+            self.obj_cnt = 0
+
+            mask = (depth_image_float > 0) & (depth_image_float - d_wrist <= 0.1)
+            mask = mask.astype(np.uint8) * 255
+            # masked_rgb = cv2.bitwise_and(img, img, mask=mask)
+
+            # 절반 사이즈로 YOLO 돌린후 결과*2
+            # resized_img = cv2.resize(img, (self.img_w // 2, self.img_h // 2), interpolation=cv2.INTER_AREA)
+            results = self.detector_obj(img, verbose=False)
+
+            # debug_vis = img.copy()
+            obj_bb_nearby = []
+            for result in results:
+                for box in result.boxes:
+                    cls = int(box.cls[0])
+                    label = result.names[cls]
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                    # cv2.rectangle(debug_vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                    # cv2.putText(debug_vis, f"{label}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+                    if label == 'person':
+                        continue
+
+                    cx = (x1 + x2) // 2
+                    cy = (y1 + y2) // 2
+
+                    if mask[int(cy), int(cx)] == False:
+                        continue
+
+                    # x1, y1, x2, y2 = 2 * x1, 2 * y1, 2 * x2, 2 * y2
+                    obj_bb_nearby.append([x1, y1, x2, y2, label])
+
+            # cv2.imshow("debug", debug_vis)
+
+            return obj_bb_nearby
+        else:
+            self.flag_detected = False
+            return []
 
 
 def calc_pred_center(coords):
@@ -381,8 +453,6 @@ def log_event(label, flag_time=False):
     global prev_label, prev
 
     now = time.time()
-    # timestamps.append(now)
-    # labels.append(label)
     if flag_time:
         print(f"{prev_label} ~ {label}: {now - prev:.3f}")
     prev_label = label
@@ -406,6 +476,7 @@ def main():
 
     queue_righthand = deque([], maxlen=10)
     img_idx = 0
+    flag_gesture = False
     try:
         while True:
             img_idx += 1
@@ -425,23 +496,36 @@ def main():
 
             elif flag_rsrecord:
                 frames = pipeline.wait_for_frames()
-                depth_frame = frames.get_depth_frame()
-                color_frame = frames.get_color_frame()
+
+                aligned_frames = align.process(frames)
+
+                # 정렬된 depth와 color 프레임 추출
+                depth_frame = aligned_frames.get_depth_frame()
+                color_frame = aligned_frames.get_color_frame()
 
                 if not depth_frame or not color_frame:
                     continue
 
-                depth_image = np.asanyarray(colorizer.colorize(depth_frame).get_data())
+                depth_image_colored = np.asanyarray(colorizer.colorize(depth_frame).get_data())
                 color_image = np.asanyarray(color_frame.get_data())
 
-                color_image = cv2.resize(color_image, dsize=(tracker.img_w, tracker.img_h), interpolation=cv2.INTER_CUBIC)
-                depth_image = cv2.resize(depth_image, dsize=(tracker.img_w, tracker.img_h),
-                                         interpolation=cv2.INTER_CUBIC)
+                # color_image = cv2.resize(color_image, dsize=(tracker.img_w, tracker.img_h), interpolation=cv2.INTER_CUBIC)
+                # depth_image_colored = cv2.resize(depth_image_colored, dsize=(tracker.img_w, tracker.img_h),
+                #                          interpolation=cv2.INTER_CUBIC)
+
+
+                depth_image = np.asanyarray(depth_frame.get_data())  # 이건 uint16 형식
+                # 깊이 값을 float(m 단위)로 변환하려면:
+                depth_image_float = depth_image * depth_scale  # float32 형식으로 변환
+
+                color_image = color_image[60:-60, :, :]
+                depth_image_colored = depth_image_colored[60:-60, :, :]
+                depth_image_float = depth_image_float[60:-60, :]        # m scale
 
                 # cv2.imshow("RGB from .bag", color_image)
-                # cv2.imshow("Depth from .bag", depth_image)
+                # cv2.imshow("Depth from .bag", depth_image_colored)
 
-            cv2.imshow("input", color_image)
+            # cv2.imshow("input", color_image)
 
             outs = tracker.run(color_image, flag_time)
             if not outs:
@@ -450,53 +534,92 @@ def main():
             all_right, all_uvds, all_verts, all_cam_t = outs
 
             ### Render mesh image
-            misc_args = dict(
-                mesh_base_color=LIGHT_PURPLE,
-                scene_bg_color=(1, 1, 1),
-                focal_length=tracker.scaled_focal_length,
-            )
-            cam_view = tracker.renderer.render_rgba_multiple(all_verts, cam_t=all_cam_t, render_res=[tracker.img_w, tracker.img_h],
-                                                     is_right=all_right, **misc_args)
+            if flag_render_mesh:
+                misc_args = dict(
+                    mesh_base_color=LIGHT_PURPLE,
+                    scene_bg_color=(1, 1, 1),
+                    focal_length=tracker.scaled_focal_length,
+                )
+                cam_view = tracker.renderer.render_rgba_multiple(all_verts, cam_t=all_cam_t, render_res=[tracker.img_w, tracker.img_h],
+                                                         is_right=all_right, **misc_args)
 
-            # Overlay image
-            input_img = color_image.astype(np.float32)[:, :, ::-1] / 255.0
-            input_img = np.concatenate([input_img, np.ones_like(input_img[:, :, :1])], axis=2)  # Add alpha channel
-            input_img_overlay = input_img[:, :, :3] * (1 - cam_view[:, :, 3:]) + cam_view[:, :, :3] * cam_view[:, :, 3:]
+                # Overlay image
+                input_img = color_image.astype(np.float32)[:, :, ::-1] / 255.0
+                input_img = np.concatenate([input_img, np.ones_like(input_img[:, :, :1])], axis=2)  # Add alpha channel
+                input_img_overlay = input_img[:, :, :3] * (1 - cam_view[:, :, 3:]) + cam_view[:, :, :3] * cam_view[:, :, 3:]
 
-            output_img = input_img_overlay[:, :, ::-1]
-            # cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}.jpg'), 255 * output_img)
-            # cv2.imwrite(os.path.join(args.out_folder, f'{img_idx}.jpg'), 255 * output_img)
-            cv2.imshow("result", output_img)
+                output_img = input_img_overlay[:, :, ::-1]
+                # cv2.imwrite(os.path.join(args.out_folder, f'{img_fn}.jpg'), 255 * output_img)
+                # cv2.imwrite(os.path.join(args.out_folder, f'{img_idx}.jpg'), 255 * output_img)
+                cv2.imshow("mesh result", output_img)
 
             ### Draw skeleton
             output_img_skel = color_image.copy()
             for uvd in all_uvds:
                 output_img_skel = draw_2d_skeleton(output_img_skel, uvd)
-            cv2.imshow("result_skeleton", output_img_skel)
+            cv2.imshow("skeleton result", output_img_skel)
 
-            log_event("render results")
+            log_event("render results", flag_time)
 
             print(" ------------------------------------ ")
 
-            ### debugin for main_v2
-            ## process only right hand gesture
-            indices = np.where(np.asarray(all_right) == 0)[0]       ### check. 0: left, 1: right
+            ## nearby object detection ##
+            """
+            - 손 위치 depth로부터 10cm 내에서 detect된 물체 boundingbox만 체크
+            - palm 2D pose로부터 10cm 내에 물체 bb가 있으면 gesture recognizer 활성화. 
+            """
+            log_event("start contact detect",  flag_time=True)
+
+            indices = np.where(np.asarray(all_right) == 0)[0]  ### check. 0: left, 1: right
 
             if len(indices) > 0:
-                uvd_right = np.squeeze(np.asarray(all_uvds)[indices[0]])
+                uvd = np.squeeze(np.asarray(all_uvds)[indices[0]])
+                uv_wrist = uvd[0, :-1]
+                d_wrist = depth_image_float[int(uv_wrist[1]), int(uv_wrist[0])]
 
-                ## save right hand finger trajectory to identify interacting finger
-                queue_righthand.append(uvd_right)
-                if len(queue_righthand) > 9 and img_idx % 5 == 0:
-                    activate_finger = identify_interacting_finger(queue_righthand.copy())
-                    print("moving finger : ", activate_finger)
+                palm_points_2d = uvd[[0, 4, 8, 12, 16, 20], :2]
+                palm_uv = np.mean(palm_points_2d, axis=0)
 
-            ## contact detection
+                obj_nearby_list = tracker.detect_objs(color_image, depth_image_float, d_wrist)
+
+                # 손 근처 물체 BB 시각화.
+                if len(obj_nearby_list) > 0:
+                    vis_obj = color_image.copy()
+                    for obj_nearby in obj_nearby_list:
+                        # draw every nearby object bb in green
+                        cv2.rectangle(vis_obj, (obj_nearby[0], obj_nearby[1]), (obj_nearby[2], obj_nearby[3]), (0, 255, 0), 2)
+                        cv2.putText(vis_obj, f'{obj_nearby[-1]}', (obj_nearby[0], obj_nearby[1] - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+                    ## activate gesture recognizer ##
+                    for obj_nearby in obj_nearby_list:
+                        cx, cy = (obj_nearby[0]+obj_nearby[2])//2, (obj_nearby[1]+obj_nearby[3])//2
+
+                        distance = np.sqrt((cx - palm_uv[0]) ** 2 + (cy - palm_uv[1]) ** 2)
+                        print("distance : ", distance)
+                        if distance < 50.0:
+                            # draw object bb if it's close to hand, as yellow
+                            cv2.rectangle(vis_obj, (obj_nearby[0], obj_nearby[1]), (obj_nearby[2], obj_nearby[3]),
+                                          (0, 255, 255), 2)
+                            cv2.putText(vis_obj, f'{obj_nearby[-1]}', (obj_nearby[0], obj_nearby[1] - 10),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                            flag_gesture = True
+
+                            # if any of object are close to hand, flag_gesture is True and no need to iterate
+                            break
+                        else:
+                            flag_gesture = False
+
+                    cv2.imshow("obj", vis_obj)
+
+                elif tracker.flag_detected:     # off the gesture only when no nearby bb has found from obj detection
+                    flag_gesture = False
+
+            log_event("end contact detect", flag_time=True)
+
+            print("Activate gesture :    ", flag_gesture)
 
 
-
-
-        print("test end")
 
     finally:
         if flag_webcam:

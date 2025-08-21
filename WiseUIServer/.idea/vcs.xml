@@ -3,5 +3,7 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$/../.." vcs="Git" />
     <mapping directory="$PROJECT_DIR$/.." vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/handtracker_wilor/submodules/ContactHands" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/handtracker_wilor/submodules/detectron2_v0.1.1" vcs="Git" />
   </component>
 </project>
