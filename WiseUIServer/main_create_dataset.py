@@ -21,15 +21,14 @@ import hl2ss_utilities
 import socket
 import multiprocessing as mp
 import queue
+import keyboard
+import datetime
 
 
 ## args ##
-flag_gesture = False
 
-
-## Set HoloLens2 wifi address ##
+# Set HoloLens2 Wi-Fi address
 host = '192.168.50.31'
-
 
 # Calibration path (must exist but can be empty)
 calibration_path = 'calibration'
@@ -39,26 +38,66 @@ pv_width = 640
 pv_height = 360
 pv_fps = 30
 
-
 # Buffer length in seconds
 buffer_size = 10
 
-# process depth image per n frame
-num_depth_count = 0     # 0 for only rgb
+# Process depth image per n frame
+num_depth_count = 10
 
-queue_contact = deque([], maxlen=5)
-queue_righthand = deque([], maxlen=30)
+prev_label, prev = "Init", time.time()
 
-send_msg_list = ["up","down","left","right","clock","cclock","tap"]
+"""
+[데이터 수집 class]
+
+short clip : 
+    - swipe/flicking ~ thumb ~ 4 direction 
+    - swipe/flicking ~ index ~ 4 direction 
+
+    - double tap/knock ~ thumb 
+    - double tap/knock ~ index
+
+long clip : 
+    - circling ~ thumb ~ 2 direction  
+    - natural
+        각 action전 정지 상태도 넣고 쥔채로 이리저리 움직이는것도 포함
+
+[수집 condition]
+
+- cam~hand view direction : 정면, 대각 4종
+- 물체 최소 3종 (사이즈, 형태 다르게)
+- on-object/on-plane
+- Gesture range(크게 작게)
+
+- 전체 반복 5회해서 FOLD로 활용.
+
+
+- 거리는 관계없음(crop)
+- 특정 키 입력 들어올때 record 시작/끝
+
+
+"""
+
+
+# Recording params
+fingers = ['thumb', 'index']
+short_actions = ['Up', 'Down', 'Left', 'Right', 'Tap']
+long_actions = ['Clock', 'CClock', 'Natural']
+
+trial = 0
+action = 'Up'
+finger_idx = 0  # ['thumb', 'index']
+duration = 1.5  # short : 1.5 sec -> 24 frame, long : 10 sec -> ?
+
+save_dir = f'dataset/trial{trial}/{action}_{fingers[finger_idx]}'
+os.makedirs(save_dir, exist_ok=True)
 
 
 def main():
+    global action, finger_idx, duration, save_dir, pv_height, pv_width
+
     ###################### init models ######################
 
     track_hand = HandTracker_our_v2()
-
-    # track_gesture = GestureClassfier(img_width=640, img_height=360)
-
 
     ###################### init comm. with hololens2 ######################
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -66,21 +105,29 @@ def main():
     init_variables, max_depth, producer = init_hl2()
 
     cv2.namedWindow('Prompt')
-    cv2.resizeWindow(winname='Prompt', width=500, height=500)
-    cv2.moveWindow(winname='Prompt', x=2000, y=200)
+    cv2.resizeWindow(winname='Prompt', width=640, height=360)
+    cv2.moveWindow(winname='Prompt', x=2640, y=200)
+
+    cv2.namedWindow('RGB')
+    cv2.resizeWindow(winname='RGB', width=640, height=360)
+    cv2.moveWindow(winname='RGB', x=2000, y=200)
+
+    cv2.namedWindow('DEPTH')
+    cv2.resizeWindow(winname='DEPTH', width=640, height=360)
+    cv2.moveWindow(winname='DEPTH', x=2000, y=560)
 
     idx_depth = 0
-    debug_idx = 0
 
-    gesture_idx = -1
-    flag_cooldown = False
-    t_cooldown = 0.0
+    flag_recording = False
+    flag_saved = True
 
-    gesture = None
-
+    data_list = []
+    bar_width = 20
+    bar_color = (0, 0, 255)
     try:
         while True:
-            debug_idx+=1
+            t1 = time.time()
+            # log_event("check server latency")
 
             # intermittently receive depth image
             idx_depth += 1
@@ -89,11 +136,15 @@ def main():
                 flag_depth = True
             else:
                 flag_depth = False
-            flag_depth = True
 
             ###################### receive input ######################
             result = receive_images(init_variables, flag_depth)
+
             if result == None:
+                if flag_recording:
+                    flag_recording = False
+                    flag_saved = True
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] camera error occured. Retry recording")
                 continue
 
             color, depth = result
@@ -101,74 +152,93 @@ def main():
             ### Display RGBD pair ###
             cv2.imshow('RGB', color)
             if flag_depth:
-                cv2.imshow('Depth', depth / max_depth)  # scale for visibility
+                cv2.imshow('DEPTH', depth / max_depth)  # scale for visibility
             cv2.waitKey(1)
-
-            color = cv2.resize(color, dsize=(640, 360), interpolation=cv2.INTER_AREA)
 
             ###################### process hand ######################
 
-            outs = track_hand.run(np.copy(color))
+            outs = track_hand.run(color)
             if not outs:
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] No hand visible")
+                if flag_recording:
+                    flag_recording = False
+                    flag_saved = True
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] camera error occured. Retry recording")
                 continue
 
-            all_right, all_uvds, all_verts, all_cam_t = outs
+            all_right, all_uvds, _, _ = outs
 
 
-            ###################### contact prediction ######################
+            ###################### receive keyboard input ######################
 
+            if not flag_recording and keyboard.is_pressed('space'):
+                flag_recording = True
+                start_time = time.time()
 
-
+            if keyboard.is_pressed('esc'):
+                print("exiting ...")
+                break
 
             ###################### process gesture ######################
             ## process only right hand gesture
             indices = np.where(np.asarray(all_right) == 1)[0]  ### check. 0: left, 1: right
 
-            if len(indices) > 0:
-                uvd_right = np.squeeze(np.asarray(all_uvds)[indices[0]])
+            if len(indices) == 0:
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] No [right] hand visible")
+                if flag_recording:
+                    flag_recording = False
+                    flag_saved = True
+                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] camera error occured. Retry recording")
+                continue
 
-                ## save right hand finger trajectory to identify interacting finger
-                queue_righthand.append(uvd_right)
+            uvd_right = np.squeeze(np.asarray(all_uvds)[indices[0]])
+            angle_label = compute_ang_from_joint(uvd_right)
 
-                # if flag_gesture:
-                #     gesture_idx, gesture = track_gesture.run(uvd_right)
-                #
-                #     ## identify interacting finger
-                #     activate_finger = identify_interacting_finger(queue_righthand)
-                # else:
-                #     gesture = None
+            color_vis = draw_2d_skeleton(color, uvd_right)
 
-            ###################### visualize ######################
-            for uvd_hand in all_uvds:
-                color = draw_2d_skeleton(color, uvd_hand)
+            if flag_recording:
+                flag_saved = False
 
-            # if gesture != None and gesture != "Natural":
-            #     cv2.putText(color, f'{gesture.upper()}',
-            #                 org=(20, 50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=2, color=(0, 0, 255),
-            #                 thickness=3)
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Recording ...")
 
-            cv2.imshow("Prompt", color)
-            cv2.waitKey(1)
+                now = time.time()
+                elapsed = now - start_time
 
+                d = np.concatenate([uvd_right.flatten(), angle_label])
+                data_list.append(d)
 
-            ###################### send to hololens2 ######################
-            ## check cooldown. 0.5 sec delay for each gesture
-            if time.time() - t_cooldown > 2.0:
-                flag_cooldown = False
+                # draw
+                ratio = 1 - (elapsed / duration)
+                bar_height = int(pv_height * ratio)
+                x1 = pv_width - bar_width
+                y1 = pv_height - bar_height
+                x2 = pv_width
+                y2 = pv_height
+                cv2.rectangle(color_vis, (x1, y1), (x2, y2), bar_color, -1)
 
-            if not flag_cooldown and gesture != None and gesture != "Natural":# and flag_contact_fin:
-                # dummy = np.asarray([debug_idx, float(gesture_idx)], dtype=np.float64)
-                send_data = send_msg_list[gesture_idx]
+                fps = str(1.0 / (time.time() - t1))
+                cv2.putText(color_vis, f'Collecting {action}_{fingers[finger_idx]} ... FPS : {fps}', org=(10, 30),
+                            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=(255, 0, 255), thickness=2)
+                cv2.imshow("Prompt", color_vis)
+                cv2.waitKey(1)
 
-                flag_cooldown = True
-                t_cooldown = time.time()
-                print("sending ... ", send_data)
+                if elapsed > duration:
+                    flag_recording = False
             else:
-                # dummy = np.asarray([debug_idx, float(-1)], dtype=np.float64)
-                send_data = "."
+                cv2.putText(color_vis, f'Ready for recording ... press space', org=(10, 30),
+                            fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=(0, 255, 255), thickness=2)
+                cv2.imshow("Prompt", color_vis)
+                cv2.waitKey(1)
 
-            send_bytes = send_data.encode('utf-8')
-            sock.sendto(send_bytes, (host, 5005))
+
+            if not flag_recording and not flag_saved:
+                flag_saved = True
+
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] end recording...saving data len : {len(data_list)}")
+                created_time = int(time.time())
+                np.save(os.path.join(save_dir, f'{created_time}'), np.array(data_list))
+                data_list = []
+
 
     finally:
         sock.close()
@@ -311,6 +381,25 @@ def log_event(label):
     print(f"{prev_label} ~ {label}: {now - prev:.3f}")
     prev_label = label
     prev = now
+
+
+def compute_ang_from_joint(joint):  # joint : (21, 3)
+    # Compute angles between joints
+    v1 = joint[[0, 1, 2, 3, 0, 5, 6, 7, 0, 9, 10, 11, 0, 13, 14, 15, 0, 17, 18, 19], :]  # Parent joint
+    v2 = joint[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], :]  # Child joint
+    v = v2 - v1  # [20, 3]
+    # Normalize v
+    v = v / np.linalg.norm(v, axis=1)[:, np.newaxis]
+
+    # Get angle using arcos of dot product
+    angle = np.arccos(np.einsum('nt,nt->n',
+                                v[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18], :],
+                                v[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19], :]))  # [15,]
+
+    angle = np.degrees(angle)  # Convert radian to degree
+
+    return angle
+
 
 if __name__ == '__main__':
     main()

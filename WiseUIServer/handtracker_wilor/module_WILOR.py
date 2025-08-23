@@ -1,7 +1,8 @@
 import os
 import sys
+
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))     # append current dir to PATH
-sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), "../"))
+# sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), "../"))
 
 import torch
 import cv2
@@ -64,23 +65,31 @@ if flag_rsrecord:
 
 
 class HandTracker_wilor():
-    def __init__(self, img_w=640, img_h=360, checkpoint_path='./pretrained_models/wilor_final.ckpt', cfg_path='./pretrained_models/model_config.yaml', YOLO_path='./pretrained_models/detector.pt'):
+    def __init__(self, img_w=640, img_h=360):
+
+        curr_dir = os.path.dirname(os.path.abspath(__file__))
+        checkpoint_path = os.path.join(curr_dir, 'pretrained_models', 'wilor_final.ckpt')
+        cfg_path = os.path.join(curr_dir, 'pretrained_models', 'model_config.yaml')
+        mano_path = os.path.join(curr_dir, 'mano_data')
+
+
+        YOLO_hand_path = os.path.join(curr_dir, 'pretrained_models', 'detector.pt')
+        YOLO_obj_path = os.path.join(curr_dir, 'pretrained_models', 'yolo11m.pt')
 
         print("check input image scale. default : img_w=640, img_h=360")
 
-        self.model, self.model_cfg = load_wilor(checkpoint_path=checkpoint_path, cfg_path=cfg_path)
-        self.detector = YOLO(YOLO_path)
+        self.model, self.model_cfg = load_wilor(checkpoint_path=checkpoint_path, cfg_path=cfg_path, mano_path=mano_path)
+        self.detector = YOLO(YOLO_hand_path)
         self.renderer = Renderer(self.model_cfg, faces=self.model.mano.faces)
-
+        self.detector_obj = YOLO(YOLO_obj_path)
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         print("self.device : ", self.device)
 
-        self.model = self.model.to(self.device)
-        self.detector = self.detector.to(self.device)
+        self.model.to(self.device)
+        self.detector.to(self.device)
+        self.detector_obj.to(self.device)
         self.model.eval()
-
-        self.detector_obj = YOLO('./pretrained_models/yolo11m.pt').to(self.device)
 
         ## instead of dataset class, save configs
         # self.ViTdataset = ViTDetDataset(self.model_cfg)
@@ -94,7 +103,7 @@ class HandTracker_wilor():
         self.img_h = img_h
 
         ## update target bbox for every 10 frame, move current bbox to target frame for 2 pixel per frame.
-        self.det_cooltime = 10
+        self.det_cooltime = 5
 
         self.obj_cnt = 0
         self.bbox_cnt = 0
@@ -110,7 +119,7 @@ class HandTracker_wilor():
 
         ## do first iteration
         log_event("start")
-        testImg = cv2.imread('./demo_img/test1.jpg')
+        testImg = cv2.imread(os.path.join(curr_dir, './demo_img/test1.jpg'))
         testImg = cv2.resize(testImg, (640, 360))
 
         log_event("load input")
@@ -494,7 +503,7 @@ def main():
                 # webcam : 480 640 3
                 color_image = color_image[60:-60, :, :]
 
-            elif flag_rsrecord:
+            elif flag_rsrecord: # realsense : 480 640
                 frames = pipeline.wait_for_frames()
 
                 aligned_frames = align.process(frames)

@@ -5,15 +5,6 @@ EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Scenes:
-  - enabled: 0
-    path: 
-    guid: 00000000000000000000000000000000
-  - enabled: 0
-    path: 
-    guid: 00000000000000000000000000000000
-  - enabled: 0
-    path: 
-    guid: 00000000000000000000000000000000
   - enabled: 1
     path: Assets/Scenes/main.unity
     guid: 722ca1cad46cbfd41984c6475368d1ff
@@ -21,5 +12,6 @@ EditorBuildSettings:
     Unity.XR.WindowsMR.Settings: {fileID: 11400000, guid: 9791818214bb3754db64ea2f331c8714, type: 2}
     UnityEditor.XR.ARCore.ARCoreSettings: {fileID: 11400000, guid: 255895d97f8e01141b3aaeda6ffdc7c0, type: 2}
     UnityEditor.XR.ARKit.ARKitSettings: {fileID: 11400000, guid: 4b3c9d559ff81234c9ef07cc0a9a6633, type: 2}
+    com.unity.xr.arfoundation.simulation_settings: {fileID: 11400000, guid: 19770a5bd3bbe50429909d3e2cef420f, type: 2}
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: b820c55d6e69a01438b253be20e0d897, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 6ebdf778df20b0540b872756b22c0439, type: 2}
