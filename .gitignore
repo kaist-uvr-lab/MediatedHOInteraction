@@ -1,17 +1,17 @@
 [Bb]uild/
-WiseUIServer/records/*
-WiseUIServer/output/*
-WiseUIServer/backup
-WiseUIServer/backup_V2
-WiseUIServer/assets
-WiseUIServer/dataset
+Server/records/*
+Server/output/*
 
-WiseUIServer/objecttracker/Yolov8_extraobjshape.v2i.yolov8/*
+Server/backup
+Server/backup_V2
 
-WiseUIServer/handtracker/mano_data/mano/models
-WiseUIServer/handtracker/checkpoint
-WiseUIServer/handtracker_wilor/pretrained_models/wilor_final.ckpt
-WiseUIServer/handtracker_wilor/pretrained_models/wilor_final.bak
+Server/assets
+Server/dataset
+
+Server/handtracker/mano_data/mano/models
+Server/handtracker/checkpoint
+Server/handtracker_wilor/pretrained_models/wilor_final.ckpt
+Server/handtracker_wilor/pretrained_models/wilor_final.bak
 
 
 */__pycache__
