@@ -16,7 +16,7 @@ import copy
 # from tensorflow.keras.models import load_model
 from collections import deque
 
-from handtracker.module_SARTE import HandTracker
+# from handtracker.module_SARTE import HandTracker
 from handtracker_wilor.module_WILOR import HandTracker_wilor
 from scipy.spatial import procrustes
 
@@ -235,14 +235,14 @@ class HandTracker_our_v2():
 
 
 
-class HandTracker_our():
-    def __init__(self):
-        self.track_hand = HandTracker()
-
-    def run(self, input):
-        result_hand = self.track_hand.Process_single_newroi(input)
-
-        return result_hand
+# class HandTracker_our():
+#     def __init__(self):
+#         self.track_hand = HandTracker()
+#
+#     def run(self, input):
+#         result_hand = self.track_hand.Process_single_newroi(input)
+#
+#         return result_hand
 
 
 class HandTracker_mp():

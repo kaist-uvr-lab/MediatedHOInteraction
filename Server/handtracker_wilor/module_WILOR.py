@@ -35,7 +35,7 @@ flag_gesture = False
 
 ## debug args ##
 flag_webcam = False
-flag_rsrecord = True
+flag_rsrecord = False
 flag_time = False
 flag_render_mesh = False
 
@@ -103,7 +103,7 @@ class HandTracker_wilor():
         self.img_h = img_h
 
         ## update target bbox for every 10 frame, move current bbox to target frame for 2 pixel per frame.
-        self.det_cooltime = 5
+        self.det_cooltime = 10
 
         self.obj_cnt = 0
         self.bbox_cnt = 0

@@ -10,7 +10,7 @@ import json
 from PIL import Image, ImageDraw, ImageFont
 
 from modules import HandTracker_our_v2, identify_interacting_finger # GestureClassfier
-from handtracker.utils.visualize import draw_2d_skeleton
+from utils.visualize import draw_2d_skeleton
 
 sys.path.append("./hl2ss_")
 import hl2ss
@@ -50,16 +50,14 @@ prev_label, prev = "Init", time.time()
 [데이터 수집 class]
 
 short clip : 
-    - swipe/flicking ~ thumb ~ 4 direction 
-    - swipe/flicking ~ index ~ 4 direction 
-
-    - double tap/knock ~ thumb 
-    - double tap/knock ~ index
-
+    - Swipe(Up, Down, Left, Right) * finger(Thumb, Index)
+    - Tap * finger(Thumb, Index)
+        > Total 10 class
 long clip : 
-    - circling ~ thumb ~ 2 direction  
-    - natural
-        각 action전 정지 상태도 넣고 쥔채로 이리저리 움직이는것도 포함
+    - Clock/CClock * finger(Thumb, Index)
+    - Natural
+        > Total 5 class
+
 
 [수집 condition]
 
@@ -71,29 +69,41 @@ long clip :
 - 전체 반복 5회해서 FOLD로 활용.
 
 
-- 거리는 관계없음(crop)
-- 특정 키 입력 들어올때 record 시작/끝
+- 거리는 관계없음(crop), 2d 위치도 관계없음(normalize)
+- space 입력으로 record 시작/끝
 
-
+- augment 방식
+    - 10 Frame을 입력으로 샘플링. 2프레임 단위로 간격?
+    - rotation변화준다면 아주 약간만. 5도 단위?
+    - normalize후 scale 조정? 0.8 ~ 1.2
+    -
+    
+    
+TODO
+    - 0825 : thumb/index  non-grasp자세 수행. 클래스별 20회 내외
+    - 0826 : 물체 챙겨오고, thumb index grasp부터 녹화. 이후 long action grasp/non-grasp 녹화.  
 """
 
 
 # Recording params
 fingers = ['thumb', 'index']
-short_actions = ['Up', 'Down', 'Left', 'Right', 'Tap']
-long_actions = ['Clock', 'CClock', 'Natural']
+# short_actions = ['Up', 'Down', 'Left', 'Right', 'Tap']
+# long_actions = ['Clock', 'CClock', 'Natural']
 
 trial = 0
-action = 'Up'
-finger_idx = 0  # ['thumb', 'index']
-duration = 1.5  # short : 1.5 sec -> 24 frame, long : 10 sec -> ?
+actions = ['Clock', 'CClock', 'Natural']
+state = 'Grasp' # Grasp  NonGrasp
+finger_idx = 1  # ['thumb', 'index']
 
-save_dir = f'dataset/trial{trial}/{action}_{fingers[finger_idx]}'
-os.makedirs(save_dir, exist_ok=True)
+duration = 2.0  # short : 1 sec -> 15 frame, long : 2 sec -> ?
+
+for act in actions:
+    save_dir = f'dataset/trial{trial}/{act}_{fingers[finger_idx]}_{state}'
+    os.makedirs(save_dir, exist_ok=True)
 
 
 def main():
-    global action, finger_idx, duration, save_dir, pv_height, pv_width
+    global actions, finger_idx, duration, save_dir, pv_height, pv_width
 
     ###################### init models ######################
 
@@ -106,15 +116,15 @@ def main():
 
     cv2.namedWindow('Prompt')
     cv2.resizeWindow(winname='Prompt', width=640, height=360)
-    cv2.moveWindow(winname='Prompt', x=2640, y=200)
+    cv2.moveWindow(winname='Prompt', x=2140, y=920)
 
     cv2.namedWindow('RGB')
     cv2.resizeWindow(winname='RGB', width=640, height=360)
-    cv2.moveWindow(winname='RGB', x=2000, y=200)
+    cv2.moveWindow(winname='RGB', x=1500, y=920)
 
     cv2.namedWindow('DEPTH')
     cv2.resizeWindow(winname='DEPTH', width=640, height=360)
-    cv2.moveWindow(winname='DEPTH', x=2000, y=560)
+    cv2.moveWindow(winname='DEPTH', x=1500, y=560)
 
     idx_depth = 0
 
@@ -124,6 +134,13 @@ def main():
     data_list = []
     bar_width = 20
     bar_color = (0, 0, 255)
+
+    act_idx = 0
+    action = actions[act_idx]
+    save_dir = f'dataset/trial{trial}/{action}_{fingers[finger_idx]}_{state}'
+
+    last_pressed = 0
+    cooldown = 0.5
     try:
         while True:
             t1 = time.time()
@@ -179,6 +196,19 @@ def main():
                 print("exiting ...")
                 break
 
+            if keyboard.is_pressed('a') and time.time() - last_pressed > cooldown:
+                last_pressed = time.time()
+
+                act_idx += 1
+                if act_idx == len(actions):
+                    print("exiting ...")
+                    break
+
+                action = actions[act_idx]
+                save_dir = f'dataset/trial{trial}/{action}_{fingers[finger_idx]}_{state}'
+                print("next actions")
+
+
             ###################### process gesture ######################
             ## process only right hand gesture
             indices = np.where(np.asarray(all_right) == 1)[0]  ### check. 0: left, 1: right
@@ -225,7 +255,7 @@ def main():
                 if elapsed > duration:
                     flag_recording = False
             else:
-                cv2.putText(color_vis, f'Ready for recording ... press space', org=(10, 30),
+                cv2.putText(color_vis, f'Ready for recording {action} ... press space', org=(10, 30),
                             fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=(0, 255, 255), thickness=2)
                 cv2.imshow("Prompt", color_vis)
                 cv2.waitKey(1)
@@ -383,22 +413,7 @@ def log_event(label):
     prev = now
 
 
-def compute_ang_from_joint(joint):  # joint : (21, 3)
-    # Compute angles between joints
-    v1 = joint[[0, 1, 2, 3, 0, 5, 6, 7, 0, 9, 10, 11, 0, 13, 14, 15, 0, 17, 18, 19], :]  # Parent joint
-    v2 = joint[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], :]  # Child joint
-    v = v2 - v1  # [20, 3]
-    # Normalize v
-    v = v / np.linalg.norm(v, axis=1)[:, np.newaxis]
 
-    # Get angle using arcos of dot product
-    angle = np.arccos(np.einsum('nt,nt->n',
-                                v[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18], :],
-                                v[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19], :]))  # [15,]
-
-    angle = np.degrees(angle)  # Convert radian to degree
-
-    return angle
 
 
 if __name__ == '__main__':
