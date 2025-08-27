@@ -27,8 +27,17 @@ import datetime
 
 #### args ####
 
+"""
+Note
+- skip 'Up~Right'-'Index' if Grasp type.
+- Natural 클래스는 thumb/index 관계없이 두 손가락은 고정한채로 나머지 손가락 및 손 전체 자세를 자유롭게 움직이는 느낌
+- index로 circling하는건 자연스럽게 가능한 선에서만.
+
+"""
+
+
 # Recording args
-trial = 1
+trial = 2
 
 # 0: ['Up', 'Down', 'Left', 'Right', 'Tap']         1: ['Clock', 'CClock', 'Natural']
 # 0: 1 sec recording                                1: 2 sec recording
