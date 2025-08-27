@@ -12,7 +12,8 @@ Server/handtracker/mano_data/mano/models
 Server/handtracker/checkpoint
 Server/handtracker_wilor/pretrained_models/wilor_final.ckpt
 Server/handtracker_wilor/pretrained_models/wilor_final.bak
-
+Server/gestureclassifier/checkpoints/*.*
+Server/gestureclassifier/sample
 
 */__pycache__
 */*/__pycache__
