@@ -25,34 +25,32 @@ import keyboard
 import datetime
 
 
-## args ##
+#### args ####
+
+# Recording args
+trial = 1
+
+# 0: ['Up', 'Down', 'Left', 'Right', 'Tap']         1: ['Clock', 'CClock', 'Natural']
+# 0: 1 sec recording                                1: 2 sec recording
+action_idx = 0
+
+# Grasp  NonGrasp
+state = 'Grasp'
+
+# fingers = ['thumb', 'index']
 
 # Set HoloLens2 Wi-Fi address
 host = '192.168.50.31'
-
-# Calibration path (must exist but can be empty)
-calibration_path = 'calibration'
-
-# Front RGB camera parameters
-pv_width = 640
-pv_height = 360
-pv_fps = 30
-
-# Buffer length in seconds
-buffer_size = 10
-
-# Process depth image per n frame
-num_depth_count = 10
-
-prev_label, prev = "Init", time.time()
 
 """
 [데이터 수집 class]
 
 short clip : 
     - Swipe(Up, Down, Left, Right) * finger(Thumb, Index)
+
     - Tap * finger(Thumb, Index)
         > Total 10 class
+
 long clip : 
     - Clock/CClock * finger(Thumb, Index)
     - Natural
@@ -77,33 +75,49 @@ long clip :
     - rotation변화준다면 아주 약간만. 5도 단위?
     - normalize후 scale 조정? 0.8 ~ 1.2
     -
-    
-    
-TODO
-    - 0825 : thumb/index  non-grasp자세 수행. 클래스별 20회 내외
-    - 0826 : 물체 챙겨오고, thumb index grasp부터 녹화. 이후 long action grasp/non-grasp 녹화.  
+
+
+[수집 params]
+
+
 """
 
+#### fixed args ####
 
-# Recording params
+# Calibration path (must exist but can be empty)
+calibration_path = 'calibration'
+
+# Front RGB camera parameters
+pv_width = 640
+pv_height = 360
+pv_fps = 30
+
+# Buffer length in seconds
+buffer_size = 10
+
+# Process depth image per n frame
+num_depth_count = 10
+
+prev_label, prev = "Init", time.time()
+
+
 fingers = ['thumb', 'index']
-# short_actions = ['Up', 'Down', 'Left', 'Right', 'Tap']
-# long_actions = ['Clock', 'CClock', 'Natural']
 
-trial = 0
-actions = ['Clock', 'CClock', 'Natural']
-state = 'Grasp' # Grasp  NonGrasp
-finger_idx = 1  # ['thumb', 'index']
-
-duration = 2.0  # short : 1 sec -> 15 frame, long : 2 sec -> ?
+if action_idx == 0:
+    actions = ['Up', 'Down', 'Left', 'Right', 'Tap']
+    duration = 1.0  # short : 1 sec -> 15 frame, long : 2 sec -> 30
+else:
+    actions = ['Clock', 'CClock', 'Natural']
+    duration = 2.0
 
 for act in actions:
-    save_dir = f'dataset/trial{trial}/{act}_{fingers[finger_idx]}_{state}'
-    os.makedirs(save_dir, exist_ok=True)
+    for finger in fingers:
+        save_dir = f'dataset/trial{trial}/{act}_{finger}_{state}'
+        os.makedirs(save_dir, exist_ok=True)
 
 
 def main():
-    global actions, finger_idx, duration, save_dir, pv_height, pv_width
+    global actions, fingers, duration, save_dir, pv_height, pv_width
 
     ###################### init models ######################
 
@@ -135,12 +149,15 @@ def main():
     bar_width = 20
     bar_color = (0, 0, 255)
 
+    finger_idx = 0
     act_idx = 0
     action = actions[act_idx]
     save_dir = f'dataset/trial{trial}/{action}_{fingers[finger_idx]}_{state}'
 
-    last_pressed = 0
+    last_pressed_0 = 0
+    last_pressed_1 = 0
     cooldown = 0.5
+
     try:
         while True:
             t1 = time.time()
@@ -196,18 +213,27 @@ def main():
                 print("exiting ...")
                 break
 
-            if keyboard.is_pressed('a') and time.time() - last_pressed > cooldown:
-                last_pressed = time.time()
-
+            if keyboard.is_pressed('a') and time.time() - last_pressed_0 > cooldown:
+                last_pressed_0 = time.time()
                 act_idx += 1
+                print("next actions")
                 if act_idx == len(actions):
+                    print("end. reset to starting idx. press s to change finger")
+                    act_idx = 0
+                action = actions[act_idx]
+                save_dir = f'dataset/trial{trial}/{action}_{fingers[finger_idx]}_{state}'
+
+
+            if keyboard.is_pressed('s') and time.time() - last_pressed_1 > cooldown:
+                last_pressed_1 = time.time()
+
+                finger_idx += 1
+                if finger_idx == 2:
                     print("exiting ...")
                     break
 
-                action = actions[act_idx]
                 save_dir = f'dataset/trial{trial}/{action}_{fingers[finger_idx]}_{state}'
-                print("next actions")
-
+                print("next finger")
 
             ###################### process gesture ######################
             ## process only right hand gesture
@@ -255,7 +281,7 @@ def main():
                 if elapsed > duration:
                     flag_recording = False
             else:
-                cv2.putText(color_vis, f'Ready for recording {action} ... press space', org=(10, 30),
+                cv2.putText(color_vis, f'Ready for {action}_{fingers[finger_idx]} ... press space', org=(10, 30),
                             fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=(0, 255, 255), thickness=2)
                 cv2.imshow("Prompt", color_vis)
                 cv2.waitKey(1)
@@ -413,7 +439,22 @@ def log_event(label):
     prev = now
 
 
+def compute_ang_from_joint(joint):  # joint : (21, 3)
+    # Compute angles between joints
+    v1 = joint[[0, 1, 2, 3, 0, 5, 6, 7, 0, 9, 10, 11, 0, 13, 14, 15, 0, 17, 18, 19], :]  # Parent joint
+    v2 = joint[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], :]  # Child joint
+    v = v2 - v1  # [20, 3]
+    # Normalize v
+    v = v / np.linalg.norm(v, axis=1)[:, np.newaxis]
 
+    # Get angle using arcos of dot product
+    angle = np.arccos(np.einsum('nt,nt->n',
+                                v[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18], :],
+                                v[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19], :]))  # [15,]
+
+    angle = np.degrees(angle)  # Convert radian to degree
+
+    return angle
 
 
 if __name__ == '__main__':
