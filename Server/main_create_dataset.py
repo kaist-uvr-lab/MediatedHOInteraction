@@ -33,6 +33,7 @@ Note
 - Natural 클래스는 thumb/index 관계없이 두 손가락은 고정한채로 나머지 손가락 및 손 전체 자세를 자유롭게 움직이는 느낌
 - index로 circling하는건 자연스럽게 가능한 선에서만.
 
+- Rtx3090에서 Recording 속도 차이가 나면(short : 1 sec -> 15 frame, long : 2 sec -> 30), duration을 늘려서 맞춘 뒤, 모션을 조금 천천히하도록 유도
 """
 
 
