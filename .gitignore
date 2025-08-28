@@ -14,6 +14,7 @@ Server/handtracker_wilor/pretrained_models/wilor_final.ckpt
 Server/handtracker_wilor/pretrained_models/wilor_final.bak
 Server/gestureclassifier/checkpoints/*.*
 Server/gestureclassifier/sample
+Server/gestureclassifier/training/data
 
 */__pycache__
 */*/__pycache__
