@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import numpy as np
 
-from dataset.dataset import Dataset, HyperParameterSet
+from dataset.dataset import Dataset
 from dataset.augmentation import AugRandomScale, AugRandomRotation, AugRandomGradualTranslation
 from dataset.impl.lowlevel import Sample, LowLevelDataset
 from utils.logger import log
@@ -27,30 +27,38 @@ seq_len = 10
 seq_gap = 2
 
 
+# training set always include trial0
+# ["trial1", "..."] : "trial1, ..." in test set
+FOLDS = [
+        ["trial4"],
+        ["trial5"],
+        ["All"],
+        ["trial1"],
+        ["trial2"],
+        ["trial3"],
+    ]
+
+partial_idx = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 16, 17, 20]
+
 # ----------------------------------------------------------------------------------------------------------------------
 class DatasetUvrHand(Dataset):
     def __init__(self, root="data\\uvrhand\\", num_synth=0):
         super(DatasetUvrHand, self).__init__("UvrHand", root, num_synth)
         self.num_synth = num_synth
 
+
     def _load_underlying_dataset(self):
         self.augs = self._get_augmenters(int(time.time())
 )
         self.underlying_dataset = self._load_uvrhand_interaction()
-        self.num_features = 78  # 3D world coordinates joints of single hand (21 joints x 3 dimensions).
-
-        self.num_folds = 6      # This dataset has 5 folads
-
-    def get_hyperparameter_set(self):
-        return HyperParameterSet(learning_rate=0.0001,
-                                 batch_size=64,
-                                 weight_decay=0,
-                                 num_epochs=100)
+        self.num_features = len(self.underlying_dataset.samples[0].pts[0])  # 3D world coordinates joints of single hand (21 joints x 3 dimensions).
+        self.num_folds = len(FOLDS)
+        self.folds = FOLDS
 
     def _get_augmenters(self, random_seed):
         return [
-            AugRandomScale(3, random_seed, 0.8, 1.2),
-            AugRandomRotation(3, random_seed, 10),
+            AugRandomScale(3, random_seed, 0.7, 1.3),
+            AugRandomRotation(3, random_seed, 15),
             AugRandomGradualTranslation(3, random_seed, -2, 2),
         ]
 
@@ -65,15 +73,6 @@ class DatasetUvrHand(Dataset):
 
         # Pre-set 5-fold cross validations from dataset's README
         # FOLD[i] means train on every other fold, test on fold i
-        FOLDS = [
-            ["trial0"],
-            ["trial1"],
-            ["trial2"],
-            ["trial3"],
-            ["trial4"],
-            ["trial5"],
-        ]
-
         # Number of folds
         FOLD_CNT = len(FOLDS)
 
@@ -109,14 +108,12 @@ class DatasetUvrHand(Dataset):
 
                     for single_action in data_action:
                         pts = [single_action[i] for i in range(single_action.shape[0])]
-                        pts_norm = self._normalize(pts)
+
 
                         if label == 'Natural':
                             label_name = label
                         else:
                             label_name = f"{label}_{finger}"
-
-                        samples += [Sample(pts_norm, label_name, trial, fname)]
 
                         # self._visualize_tips(pts, "origin")
 
@@ -129,8 +126,14 @@ class DatasetUvrHand(Dataset):
 
                             # self._visualize_tips(pts_aug, "aug")
                             # cv2.waitKey(0)
-                            pts_aug_norm = self._normalize(pts_aug)
-                            samples += [Sample(pts_aug_norm, label_name, trial, fname)]
+
+                            pts_aug_norm = _normalize(pts_aug)
+                            pts_aug_norm = _extract_partialhand(pts_aug_norm)
+                            samples += [Sample(pts_aug_norm, label_name, trial)]
+
+                        pts_norm = _normalize(pts)
+                        pts_norm = _extract_partialhand(pts_norm)
+                        samples += [Sample(pts_norm, label_name, trial)]
 
 
         for s_idx, sample in enumerate(samples):
@@ -138,9 +141,21 @@ class DatasetUvrHand(Dataset):
             for fold_idx in range(FOLD_CNT):
                 fold = FOLDS[fold_idx]
 
-                trial = sample.subject
+                if fold[0] == 'All':
+                    train_indices[fold_idx] += [s_idx]
 
-                if trial in fold:
+                    if len(test_indices[fold_idx]) < 1000:
+                        test_indices[fold_idx] += [s_idx]
+                    continue
+
+                trial = sample.subject
+                label_gt = sample.label
+
+                if trial == 'trial0':
+                    train_indices[fold_idx] += [s_idx]
+                elif label_gt == 'Natural':
+                    train_indices[fold_idx] += [s_idx]
+                elif trial in fold:
                     # Add the instance as a TESTING instance to this fold
                     test_indices[fold_idx] += [s_idx]
 
@@ -150,8 +165,11 @@ class DatasetUvrHand(Dataset):
                             continue
                         train_indices[other_idx] += [s_idx]
 
+
         # k-fold sanity check
         for fold_idx in range(FOLD_CNT):
+            if FOLDS[fold_idx][0] == 'All':   # skip for 'All' fold
+                continue
             assert len(train_indices[fold_idx]) + len(test_indices[fold_idx]) == len(samples)
             # Ensure there is no intersection between training/test indices
             assert len(set(train_indices[fold_idx]).intersection(test_indices[fold_idx])) == 0
@@ -174,45 +192,6 @@ class DatasetUvrHand(Dataset):
             ret += np.linalg.norm(pts[idx] - pts[idx - 1])
 
         return ret
-
-
-    def _normalize(self, pts, norm_ratio_x=180.0, norm_ratio_y=180.0, norm_ratio_z=100.0):
-        """
-        Normalize a single sample
-
-        :param sample: the sample to normalize
-        :return: the normalized sample
-        """
-
-        pts = np.asarray(pts)
-
-        pts_norm = np.zeros((pts.shape[0], pts.shape[1]))
-
-        for frame_idx in range(pts.shape[0]):
-            target_pose = pts[frame_idx, :63].reshape(21, 3)
-            target_angle = pts[frame_idx, 63:]
-
-            # norm 2d pose
-            if frame_idx == 0:
-                root_pose = target_pose[0, :]
-            norm_pose = target_pose - root_pose
-
-            norm_pose[:, 0] = norm_pose[:, 0] / norm_ratio_x
-            norm_pose[:, 1] = norm_pose[:, 1] / norm_ratio_y
-            norm_pose[:, 2] = norm_pose[:, 2] / norm_ratio_z
-
-            # update pose and angle
-            pts_norm[frame_idx, :63] = norm_pose.flatten()
-            pts_norm[frame_idx, 63:] = target_angle / 180.0
-
-        # # remove NaN values
-        # nan_indice = np.argwhere(np.isnan(pts_norm))
-        # for nan_idx in nan_indice:
-        #     pts_norm[nan_idx[0], nan_idx[1]] = 0.0
-
-        pts_norm = [np.array(row) for row in pts_norm]
-
-        return pts_norm
 
 
     def _compute_ang_from_joint(self, joint):  # joint : (21, 3)
@@ -265,3 +244,59 @@ class DatasetUvrHand(Dataset):
         cv2.imshow(fig, canvas)
         cv2.waitKey(1)
 
+def _normalize(pts, norm_ratio_x=180.0, norm_ratio_y=180.0, norm_ratio_z=100.0):
+    """
+    Normalize a single sample
+
+    :param sample: the sample to normalize
+    :return: the normalized sample
+    """
+
+    pts = np.asarray(pts)
+
+    pts_norm = np.zeros((pts.shape[0], pts.shape[1]))
+
+    for frame_idx in range(pts.shape[0]):
+        target_pose = pts[frame_idx, :63].reshape(21, 3)
+        target_angle = pts[frame_idx, 63:]
+
+        # norm 2d pose
+        if frame_idx == 0:
+            root_pose = target_pose[0, :]
+        norm_pose = target_pose - root_pose
+
+        norm_pose[:, 0] = norm_pose[:, 0] / norm_ratio_x
+        norm_pose[:, 1] = norm_pose[:, 1] / norm_ratio_y
+        norm_pose[:, 2] = norm_pose[:, 2] / norm_ratio_z
+
+        # update pose and angle
+        pts_norm[frame_idx, :63] = norm_pose.flatten()
+        pts_norm[frame_idx, 63:] = target_angle / 180.0
+
+    # # remove NaN values
+    # nan_indice = np.argwhere(np.isnan(pts_norm))
+    # for nan_idx in nan_indice:
+    #     pts_norm[nan_idx[0], nan_idx[1]] = 0.0
+
+    pts_norm = [np.array(row) for row in pts_norm]
+
+    return pts_norm
+
+def _extract_partialhand(pts_norm):
+        # set partial pts
+        # 0~4   5~8   9 12   13 16   17 20
+        # pts_norm : (seq_len, 63+15) -> (seq_len, 45+15)
+        pts_norm = np.asarray(pts_norm)
+        temp = []
+        for frame_idx in range(pts_norm.shape[0]):
+            target_pose = pts_norm[frame_idx, :63].reshape(21, 3)
+            target_angle = pts_norm[frame_idx, 63:]
+
+            target_pose = target_pose[partial_idx, :]
+            target_pose = target_pose.flatten()
+
+            pts_ = np.concatenate((target_pose, target_angle), axis=0)
+            temp.append(pts_)
+        pts_norm = [np.array(row) for row in temp]
+
+        return pts_norm

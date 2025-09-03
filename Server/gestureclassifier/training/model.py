@@ -29,7 +29,9 @@ class DeepGRU(nn.Module):
             nn.Linear(256, num_classes)
         )
 
-    def forward(self, x_padded, x_lengths):
+    def forward(self, x_padded):
+        x_lengths = torch.full((x_padded.shape[0],), x_padded.shape[1]).cpu()
+
         x_packed = packer(x_padded, x_lengths.cpu(), batch_first=True)
 
         # Encode

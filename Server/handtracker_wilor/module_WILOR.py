@@ -84,7 +84,6 @@ class HandTracker_wilor():
         self.detector_obj = YOLO(YOLO_obj_path)
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        print("self.device : ", self.device)
 
         self.model.to(self.device)
         self.detector.to(self.device)
@@ -471,7 +470,6 @@ def log_event(label, flag_time=False):
 
 def main():
     from collections import deque
-    from modules import identify_interacting_finger
 
     torch.backends.cudnn.benchmark = True
     tracker = HandTracker_wilor()

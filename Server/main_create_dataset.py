@@ -9,7 +9,7 @@ import struct
 import json
 from PIL import Image, ImageDraw, ImageFont
 
-from modules import HandTracker_our_v2, identify_interacting_finger # GestureClassfier
+from modules import HandTracker_our_v2
 from utils.visualize import draw_2d_skeleton
 
 sys.path.append("./hl2ss_")
@@ -23,6 +23,8 @@ import multiprocessing as mp
 import queue
 import keyboard
 import datetime
+from gestureclassifier.util import _compute_ang_from_joint
+
 
 
 #### args ####
@@ -170,6 +172,7 @@ def main():
 
     try:
         while True:
+            start_t = time.time()
             t1 = time.time()
             # log_event("check server latency")
 
@@ -258,7 +261,7 @@ def main():
                 continue
 
             uvd_right = np.squeeze(np.asarray(all_uvds)[indices[0]])
-            angle_label = compute_ang_from_joint(uvd_right)
+            angle_label = _compute_ang_from_joint(uvd_right)
 
             color_vis = draw_2d_skeleton(color, uvd_right)
 
@@ -305,6 +308,11 @@ def main():
                 np.save(os.path.join(save_dir, f'{created_time}'), np.array(data_list))
                 data_list = []
 
+            end_t = time.time()
+
+            ## fix to 15 fps
+            latency = end_t - start_t
+            print(f"fps : {1 / latency}, ms : {latency * 1000}")
 
     finally:
         sock.close()
@@ -448,23 +456,6 @@ def log_event(label):
     prev_label = label
     prev = now
 
-
-def compute_ang_from_joint(joint):  # joint : (21, 3)
-    # Compute angles between joints
-    v1 = joint[[0, 1, 2, 3, 0, 5, 6, 7, 0, 9, 10, 11, 0, 13, 14, 15, 0, 17, 18, 19], :]  # Parent joint
-    v2 = joint[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], :]  # Child joint
-    v = v2 - v1  # [20, 3]
-    # Normalize v
-    v = v / np.linalg.norm(v, axis=1)[:, np.newaxis]
-
-    # Get angle using arcos of dot product
-    angle = np.arccos(np.einsum('nt,nt->n',
-                                v[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18], :],
-                                v[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19], :]))  # [15,]
-
-    angle = np.degrees(angle)  # Convert radian to degree
-
-    return angle
 
 
 if __name__ == '__main__':

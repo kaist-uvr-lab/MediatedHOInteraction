@@ -9,8 +9,9 @@ import struct
 import json
 from PIL import Image, ImageDraw, ImageFont
 
-from modules import HandTracker_our_v2, identify_interacting_finger # GestureClassfier
-from handtracker.utils.visualize import draw_2d_skeleton
+from modules import HandTracker_our_v2, GestureClassfier
+from collections import deque
+from utils.visualize import draw_2d_skeleton
 
 sys.path.append("./hl2ss_")
 import hl2ss
@@ -20,12 +21,11 @@ import hl2ss_3dcv
 import hl2ss_utilities
 import socket
 import multiprocessing as mp
-import queue
+
 
 
 ## args ##
 flag_gesture = False
-
 
 ## Set HoloLens2 wifi address ##
 host = '192.168.50.31'
@@ -39,17 +39,13 @@ pv_width = 640
 pv_height = 360
 pv_fps = 30
 
-
 # Buffer length in seconds
 buffer_size = 10
 
 # process depth image per n frame
-num_depth_count = 0     # 0 for only rgb
+num_depth_count = 10     # 0 for only rgb
 
-queue_contact = deque([], maxlen=5)
-queue_righthand = deque([], maxlen=30)
-
-send_msg_list = ["up","down","left","right","clock","cclock","tap"]
+queue_righthand = deque([], maxlen=10)
 
 
 def main():
@@ -57,12 +53,10 @@ def main():
 
     track_hand = HandTracker_our_v2()
 
-    # track_gesture = GestureClassfier(img_width=640, img_height=360)
-
+    track_gesture = GestureClassfier()
 
     ###################### init comm. with hololens2 ######################
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
     init_variables, max_depth, producer = init_hl2()
 
     cv2.namedWindow('Prompt')
@@ -116,36 +110,36 @@ def main():
 
 
             ###################### contact prediction ######################
-
+            # handtracker_wilor/module_WILOR.py main함수에 있음.
 
 
 
             ###################### process gesture ######################
-            ## process only right hand gesture
+            ## process only right hand visible
             indices = np.where(np.asarray(all_right) == 1)[0]  ### check. 0: left, 1: right
-
             if len(indices) > 0:
                 uvd_right = np.squeeze(np.asarray(all_uvds)[indices[0]])
 
-                ## save right hand finger trajectory to identify interacting finger
-                queue_righthand.append(uvd_right)
+                if flag_gesture:
+                    # preprocess joint pose
+                    angle_label = track_gesture._compute_ang_from_joint(uvd_right)
+                    data = np.concatenate([uvd_right.flatten(), angle_label])
 
-                # if flag_gesture:
-                #     gesture_idx, gesture = track_gesture.run(uvd_right)
-                #
-                #     ## identify interacting finger
-                #     activate_finger = identify_interacting_finger(queue_righthand)
-                # else:
-                #     gesture = None
+                    queue_righthand.append(data)
+
+                    if len(queue_righthand) < 10:
+                        continue
+
+                    gesture_idx, gesture = track_gesture.run(queue_righthand)  # queue (10, 63+15)
 
             ###################### visualize ######################
             for uvd_hand in all_uvds:
                 color = draw_2d_skeleton(color, uvd_hand)
 
-            # if gesture != None and gesture != "Natural":
-            #     cv2.putText(color, f'{gesture.upper()}',
-            #                 org=(20, 50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=2, color=(0, 0, 255),
-            #                 thickness=3)
+            if gesture != None and gesture != "Natural":
+                cv2.putText(color, f'{gesture.upper()}',
+                            org=(20, 50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=2, color=(0, 0, 255),
+                            thickness=3)
 
             cv2.imshow("Prompt", color)
             cv2.waitKey(1)
@@ -158,7 +152,7 @@ def main():
 
             if not flag_cooldown and gesture != None and gesture != "Natural":# and flag_contact_fin:
                 # dummy = np.asarray([debug_idx, float(gesture_idx)], dtype=np.float64)
-                send_data = send_msg_list[gesture_idx]
+                send_data = gesture
 
                 flag_cooldown = True
                 t_cooldown = time.time()

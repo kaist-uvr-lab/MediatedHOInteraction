@@ -3,7 +3,7 @@ import sys
 import cv2
 import time
 import numpy as np
-from ultralytics import YOLO
+# from ultralytics import YOLO
 
 import torch
 import numpy as np
@@ -16,10 +16,10 @@ import copy
 # from tensorflow.keras.models import load_model
 from collections import deque
 
+
 # from handtracker.module_SARTE import HandTracker
 from handtracker_wilor.module_WILOR import HandTracker_wilor
-from scipy.spatial import procrustes
-
+from gestureclassifier.model_update import create_model
 
 
 finger_joints = {
@@ -32,206 +32,134 @@ finger_joints = {
 tip_joints = [4, 8, 12, 16, 20]
 baseline_variance = None
 
-def identify_interacting_finger(pose_history):
-    global baseline_variance
 
-    poses = np.stack(pose_history)   # ndarray (n, 21, 3)
-    poses_tip = poses[:, tip_joints, :].copy()
+class GestureClassfier():
+    def __init__(self, ckpt="./gestureclassifier/checkpoints/checkpoint.tar"):
 
-    mtx1, mtx2, disparity = procrustes(poses_tip[0, :, :], poses_tip[-1, :, :])
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-    # 손가락 개별 변화량 계산
-    movement = np.linalg.norm(mtx2 - mtx1, axis=1)
-    for i, delta in enumerate(movement):
-        print(f"Finger {i}: movement = {delta:.4f}")
+        self.model_gesture = create_model(num_features=60, num_classes=15)
 
-    """
-    delta > 0.15, max value가 interacting finger?
-    mtx 여러개 계산해서 차이 누적한걸로 계산해야할듯.
-    """
+        checkpoint = torch.load(ckpt)
+        state_dict = checkpoint['model_state_dict']
 
-    # poses_rel = poses - poses[:, 0, :].reshape(-1, 1, 3)
+        # "module." prefix가 있는지 확인
+        has_module_prefix = any(k.startswith("module.") for k in state_dict.keys())
+        # prefix 제거
+        if has_module_prefix:
+            new_state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        else:
+            new_state_dict = state_dict
 
-    # poses_tip = poses_rel[:, tip_joints, :].copy()     # (n, 5, 3)
-    #
-    # poses_ref = poses_tip[:, 2, :]
-    #
-    # relative = poses_tip - poses_ref[:, np.newaxis, :]  # shape: (n, 5, 3)
-    #
-    # # 방향 정규화 (단위 벡터)
-    # norms = np.linalg.norm(relative, axis=2, keepdims=True)
-    # unit_dirs = relative / (norms + 1e-8)  # 작은 값 더해서 0 나눗셈 방지
-    #
-    # # 원래 벡터들의 크기 유지
-    # original_magnitudes = np.linalg.norm(poses_tip, axis=2, keepdims=True)
-    #
-    # # 방향은 기준 벡터 기준으로, 크기는 원래대로
-    # normalized_vectors = unit_dirs * original_magnitudes  # shape: (n, 5, 3)
-    #
-    # diff = normalized_vectors[1:] - normalized_vectors[:-1]
-    #
-    # print(np.sum(np.abs(diff), axis=None))
+        self.model_gesture.load_state_dict(new_state_dict)
+        self.model_gesture = torch.nn.DataParallel(self.model_gesture).cuda()
+        self.model_gesture.eval()
 
-    return None
 
-# def recog_contact(depth, tip):
-#     depth_vis = np.copy(depth)
-#     depth_vis[depth_vis > 0.5] = 0
-#     depth_vis = (depth_vis / 0.5) * 255
-#
-#     arr_len = 50
-#     tip_x = min(int(tip[1]) * 2, 719)
-#     tip_y = min(int(tip[0]) * 2, 1279)
-#
-#     tip_based_array = [depth_vis[tip_x:min((tip_x + arr_len), 720), tip_y],
-#                        np.flip(depth_vis[max((tip_x - arr_len), 0):tip_x, tip_y]),
-#                        depth_vis[tip_x, tip_y:min((tip_y + arr_len), 1280)],
-#                        np.flip(depth_vis[tip_x, max((tip_y - arr_len), 0):tip_y])]
-#
-#     flag_contact = []
-#     for arr_idx, array in enumerate(tip_based_array):
-#         if len(array) < 1:
-#             continue
-#         array_ = np.asarray(np.copy(array), dtype=np.int8)
-#         for ele_idx, ele in enumerate(array_):
-#             if ele_idx == 0:
-#                 array_[ele_idx] -= array_[0]
-#             else:
-#                 array_[ele_idx] -= array[ele_idx - 1]
-#
-#         array_[array_ > 200] = 0
-#         array_ *= 10
-#         array_ = np.abs(array_)
-#         tip_based_array[arr_idx] = array_
-#
-#         if len(np.where(array_ > 25)[0]) > 0:
-#             flag_contact.append(False)
-#         else:
-#             flag_contact.append(True)
-#     if sum(flag_contact) > 1:
-#         # print("contact, ", sum(flag_contact))
-#         flag_contact = True
-#     else:
-#         # print("no contact, ", sum(flag_contact))
-#         flag_contact = False
-#
-#     return flag_contact
-#
-#
-#
-# class GestureClassfier():
-#     def __init__(self, img_width=640, img_height=360):
-#         self.actions = ['Up', 'Down', 'Left', 'Right', 'Clock', 'CClock', 'Tap', 'Natural']
-#         self.seq_length = 13
-#         self.model = load_model('./gestureclassifier/model.h5')
-#
-#         self.seq = deque([], maxlen=15)
-#         self.action_list = []
-#
-#         self.norm_ratio_x = img_width / 2.0
-#         self.norm_ratio_y = img_height / 2.0
-#         self.tip_history = np.zeros(1)
-#
-#     def init_que(self):
-#         self.seq = deque([], maxlen=15)
-#         self.action_list = []
-#         self.tip_history = np.zeros(1)
-#
-#     def run(self, joint):
-#         pred_idx = -1
-#         if joint[0, 0] == joint[1, 0] and joint[0, 1] == joint[1, 1]:
-#             return pred_idx, None
-#
-#         angle_label = self.compute_ang_from_joint(joint)
-#         d = np.concatenate([joint.flatten(), angle_label])
-#         self.seq.append(d)
-#         if len(self.seq) < self.seq_length:
-#             return pred_idx, None
-#
-#         input_norm, self.tip_history = self.preprocess(self.seq)
-#
-#         pred = self.model.predict(input_norm, verbose=0).squeeze()
-#         pred_idx = int(np.argmax(pred))
-#         conf = pred[pred_idx]
-#
-#         if conf < 0.8:
-#             this_action = "Natural"
-#             pred_idx = 7
-#         else:
-#             this_action = self.actions[pred_idx]
-#             # print(this_action)
-#
-#         # print(f"{this_action} with {conf}")
-#
-#         if len(self.action_list) == 0:
-#             self.action_list.append(this_action)
-#         elif self.action_list[-1] == this_action:
-#             self.action_list.append(this_action)
-#         else:
-#             self.action_list = []
-#
-#         if len(self.action_list) > 4:
-#             return pred_idx, this_action
-#         else:
-#             return -1, None
-#
-#     def preprocess(self, seq):
-#         seq_list = [*seq]
-#         input_data = np.expand_dims(np.array(seq_list[-self.seq_length:], dtype=np.float32), axis=0)  # (1, 10, 78)
-#         input_norm = np.zeros((input_data.shape[0], input_data.shape[1], 51))
-#         for frame_idx in range(input_data.shape[1]):
-#             target_pose = input_data[0, frame_idx, :63].reshape(21, 3)
-#             target_angle = input_data[0, frame_idx, 63:]
-#
-#             # norm 2d pose
-#             if frame_idx == 0:
-#                 root_pose = target_pose[0, :]
-#             norm_pose = target_pose - root_pose
-#             norm_pose[:, 0] = norm_pose[:, 0] / self.norm_ratio_x
-#             norm_pose[:, 1] = norm_pose[:, 1] / self.norm_ratio_y
-#
-#             norm_angle = target_angle / 180.0
-#
-#             nan_indice = np.argwhere(np.isnan(norm_angle))
-#             for nan_idx in nan_indice:
-#                 norm_angle[nan_idx[0]] = 0.0
-#
-#             # update pose and angle
-#             norm_pose_cut = norm_pose[[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 17], :]
-#
-#             input_norm[0, frame_idx, :36] = norm_pose_cut.flatten()
-#             input_norm[0, frame_idx, 36:] = norm_angle
-#
-#         tip_history = np.squeeze(input_data[0, :, 12:15])
-#
-#         return input_norm, tip_history
-#
-#     def compute_ang_from_joint(self, joint):  # joint : (21, 3)
-#         # Compute angles between joints
-#         v1 = joint[[0, 1, 2, 3, 0, 5, 6, 7, 0, 9, 10, 11, 0, 13, 14, 15, 0, 17, 18, 19], :]  # Parent joint
-#         v2 = joint[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], :]  # Child joint
-#         v = v2 - v1  # [20, 3]
-#         # Normalize v
-#         v = v / np.linalg.norm(v, axis=1)[:, np.newaxis]
-#
-#         # Get angle using arcos of dot product
-#         angle = np.arccos(np.einsum('nt,nt->n',
-#                                     v[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18], :],
-#                                     v[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19], :]))  # [15,]
-#
-#         angle = np.degrees(angle)  # Convert radian to degree
-#
-#         angle_label = np.array(angle, dtype=np.float32)
-#
-#         return angle_label
+        # default args
+        self.seq_len = 10
+        self.idx_to_class = {0: 'CClock_index', 1: 'CClock_thumb',
+                             2: 'Clock_index', 3: 'Clock_thumb',
+                             4: 'Down_index', 5: 'Down_thumb',
+                             6: 'Left_index', 7: 'Left_thumb',
+                             8: 'Natural',
+                             9: 'Right_index', 10: 'Right_thumb',
+                             11: 'Tap_index', 12: 'Tap_thumb',
+                             13: 'Up_index', 14: 'Up_thumb'}
+        self.partial_idx = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 16, 17, 20]
+
+
+
+    def run(self, input):
+        # input : queue (10, 63+15)  -> ndarray (10, 78)
+        input = np.array(input).reshape(10, -1)
+
+        input = self._normalize(input)
+        input = self._extract_partialhand(input)
+
+        input = torch.from_numpy(input).to(self.device).unsqueeze(0).float()
+
+        with torch.no_grad():
+            output = self.model_gesture(input)
+
+        pred = output.argmax(1).cpu().numpy()
+        gesture = self.idx_to_class[pred[0]]
+
+        return pred[0], gesture
+
+    def _normalize(self, pts, norm_ratio_x=180.0, norm_ratio_y=180.0, norm_ratio_z=100.0):
+        """
+        Normalize a single sample
+
+        :param sample: the sample to normalize
+        :return: the normalized sample
+        """
+
+        pts = np.asarray(pts)
+
+        pts_norm = np.zeros((pts.shape[0], pts.shape[1]))
+
+        for frame_idx in range(pts.shape[0]):
+            target_pose = pts[frame_idx, :63].reshape(21, 3)
+            target_angle = pts[frame_idx, 63:]
+
+            # norm 2d pose
+            if frame_idx == 0:
+                root_pose = target_pose[0, :]
+            norm_pose = target_pose - root_pose
+
+            norm_pose[:, 0] = norm_pose[:, 0] / norm_ratio_x
+            norm_pose[:, 1] = norm_pose[:, 1] / norm_ratio_y
+            norm_pose[:, 2] = norm_pose[:, 2] / norm_ratio_z
+
+            # update pose and angle
+            pts_norm[frame_idx, :63] = norm_pose.flatten()
+            pts_norm[frame_idx, 63:] = target_angle / 180.0
+
+        return pts_norm
+
+    def _extract_partialhand(self, pts_norm):
+        # set partial pts
+        # 0~4   5~8   9 12   13 16   17 20
+        # pts_norm : (seq_len, 63+15) -> (seq_len, 45+15)
+        pts_norm = np.asarray(pts_norm)
+        pts_norm_part = []
+        for frame_idx in range(pts_norm.shape[0]):
+            target_pose = pts_norm[frame_idx, :63].reshape(21, 3)
+            target_angle = pts_norm[frame_idx, 63:]
+
+            target_pose = target_pose[self.partial_idx, :]
+            target_pose = target_pose.flatten()
+
+            pts_ = np.concatenate((target_pose, target_angle), axis=0)
+            pts_norm_part.append(pts_)
+
+        return np.array(pts_norm_part)
+
+    def _compute_ang_from_joint(self, joint):  # joint : (21, 3)
+        # Compute angles between joints
+        v1 = joint[[0, 1, 2, 3, 0, 5, 6, 7, 0, 9, 10, 11, 0, 13, 14, 15, 0, 17, 18, 19], :]  # Parent joint
+        v2 = joint[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], :]  # Child joint
+        v = v2 - v1  # [20, 3]
+        # Normalize v
+        v = v / np.linalg.norm(v, axis=1)[:, np.newaxis]
+
+        # Get angle using arcos of dot product
+        angle = np.arccos(np.einsum('nt,nt->n',
+                                    v[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18], :],
+                                    v[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19], :]))  # [15,]
+
+        angle = np.degrees(angle)  # Convert radian to degree
+
+        return angle
 
 
 class HandTracker_our_v2():
     def __init__(self):
-        self.track_hand = HandTracker_wilor()
+        self.model_hand = HandTracker_wilor()
 
     def run(self, input):
-        return self.track_hand.run(input)
+        return self.model_hand.run(input)
 
 
 
@@ -278,49 +206,49 @@ class HandTracker_mp():
         return result_hand
 
 
-class ObjTracker():
-    def __init__(self):
-        self.model = YOLO("./objecttracker/yolo11n.yaml")
-        self.model = YOLO("./objecttracker/yolo11n.pt").to('cuda')
-        self.idx = 0
-
-    def run(self, img, flag_vis=False): # input : img_cv
-        # imgSize = (img.shape[0], img.shape[1])  # (360, 640)
-
-        # results = self.model(img, conf=0.4, device=0)
-        results = self.model(img, conf=0.4, device=0, verbose=False, classes=[0, 39, 41, 43, 44, 46, 47, 64, 65, 67])
-        result = results[0]
-
-        if flag_vis:
-            plots = result.plot()
-            cv2.imshow("object tracker results", plots)
-            cv2.waitKey(1)
-
-        boxes = result.boxes
-
-        center_dict = {}
-        flag_hand = False
-        for box in boxes:
-            bbox = np.squeeze(box.xyxy.cpu().numpy())
-            cls = int(box.cls.cpu().numpy()[0])
-            if cls == 0:
-                # hand detected
-                flag_hand = True
-            if cls != 0:
-                center_x = int((bbox[0] + bbox[2]) / 2)
-                center_y = int((bbox[1] + bbox[3]) / 2)
-                center_dict[cls] = [center_x, center_y]
-
-        ## visualize obj centers
-        # if flag_vis:
-            # debug = np.copy(img)
-            # for center in center_list:
-            #     cv2.circle(debug, center, 5, color=[255, 255, 0], thickness=-1, lineType=cv2.LINE_AA)
-            # cv2.imshow("object centers", debug)
-            # cv2.waitKey(1)
-
-        return flag_hand, center_dict
-
+# class ObjTracker():
+#     def __init__(self):
+#         self.model = YOLO("./objecttracker/yolo11n.yaml")
+#         self.model = YOLO("./objecttracker/yolo11n.pt").to('cuda')
+#         self.idx = 0
+#
+#     def run(self, img, flag_vis=False): # input : img_cv
+#         # imgSize = (img.shape[0], img.shape[1])  # (360, 640)
+#
+#         # results = self.model(img, conf=0.4, device=0)
+#         results = self.model(img, conf=0.4, device=0, verbose=False, classes=[0, 39, 41, 43, 44, 46, 47, 64, 65, 67])
+#         result = results[0]
+#
+#         if flag_vis:
+#             plots = result.plot()
+#             cv2.imshow("object tracker results", plots)
+#             cv2.waitKey(1)
+#
+#         boxes = result.boxes
+#
+#         center_dict = {}
+#         flag_hand = False
+#         for box in boxes:
+#             bbox = np.squeeze(box.xyxy.cpu().numpy())
+#             cls = int(box.cls.cpu().numpy()[0])
+#             if cls == 0:
+#                 # hand detected
+#                 flag_hand = True
+#             if cls != 0:
+#                 center_x = int((bbox[0] + bbox[2]) / 2)
+#                 center_y = int((bbox[1] + bbox[3]) / 2)
+#                 center_dict[cls] = [center_x, center_y]
+#
+#         ## visualize obj centers
+#         # if flag_vis:
+#             # debug = np.copy(img)
+#             # for center in center_list:
+#             #     cv2.circle(debug, center, 5, color=[255, 255, 0], thickness=-1, lineType=cv2.LINE_AA)
+#             # cv2.imshow("object centers", debug)
+#             # cv2.waitKey(1)
+#
+#         return flag_hand, center_dict
+#
 
 
 # 0: 'person', 41: 'cup',

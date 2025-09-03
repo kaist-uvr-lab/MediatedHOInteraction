@@ -66,9 +66,9 @@ num_depth_count = 10
 prev_label, prev = "Init", time.time()
 
 
-record_duration_per_gesture = 2.0
-pause_duration_per_gesture = 2.0
-num_per_action = 10
+record_duration_per_gesture = 1.5
+pause_duration_per_gesture = 3.0
+num_per_action = 1
 actions_to_collect = []
 
 for i in range(num_per_action):
@@ -87,8 +87,8 @@ def main():
 
 
     ###################### init comm. with hololens2 ######################
-    # sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    # init_variables, max_depth, producer = init_hl2()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    init_variables, max_depth, producer = init_hl2()
 
     cv2.namedWindow('Prompt')
     cv2.resizeWindow(winname='Prompt', width=640, height=360)
@@ -105,13 +105,15 @@ def main():
     record_end_time = None
     total_len = len(actions_to_collect)
     flag_recording = False
-    flag_init = True
+    flag_init = False
+    flag_once = True
 
     target_finger = fingers[finger_idx]
     frame_idx = 0
 
     color_frames = []
     depth_frames = []
+    label_log = {}
 
     try:
         while True:
@@ -125,8 +127,8 @@ def main():
                 flag_depth = False
 
             ###################### receive input ######################
-            # result = receive_images(init_variables, flag_depth)
-            result = get_dummy_frame()
+            result = receive_images(init_variables, flag_depth)
+            # result = get_dummy_frame()
 
             if result == None:
                 continue
@@ -134,85 +136,100 @@ def main():
             color, depth = result
 
             ### save buffer ###
-            color_frames.append((frame_idx, color.copy()))
-            if flag_depth:
-                depth_frames.append((frame_idx, depth.copy()))
+            if flag_init:
+                color_frames.append((frame_idx, color.copy()))
+                if flag_depth:
+                    depth_frames.append((frame_idx, depth.copy()))
+                frame_idx += 1
 
-            frame_idx += 1
             ### Display RGB ###
             cv2.imshow('RGB', color)
             cv2.waitKey(1)
 
             ###################### receive keyboard input ######################
+            if keyboard.is_pressed('space') and flag_once:
+                print("start")
+                flag_once = False
+
+                flag_init = True
+                flag_recording = False
+                record_start_time = time.time()
+                record_end_time = time.time()
 
             if keyboard.is_pressed('esc'):
                 print("exiting ...")
                 break
 
             ###################### show prompt ######################
-            if current_action_index == total_len:
-                break
 
             if flag_init:
-                flag_init = False
-                flag_recording = True
-                record_start_time = time.time()
+                if flag_recording:
+                    elapsed = time.time() - record_start_time
 
-            if flag_recording:
-                elapsed = time.time() - record_start_time
+                    action_text = actions_to_collect[current_action_index]
+                    # save label for current frame
+                    label_log[frame_idx] = action_text
 
-                # 오른쪽 위 빨간 원
-                cv2.circle(color, (pv_width - 30, 30), 15, (0, 0, 255), -1)
+                    # 오른쪽 위 빨간 원
+                    cv2.circle(color, (pv_width - 30, 30), 15, (0, 0, 255), -1)
 
-                # 왼쪽 위 텍스트
-                action_text = actions_to_collect[current_action_index]
-                cv2.putText(color, f"{target_finger} - {action_text} ({current_action_index}/{total_len})", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+                    # 왼쪽 위 텍스트
+                    cv2.putText(color, f"{target_finger} - {action_text} ({current_action_index+1}/{total_len})", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 0) , 2)
 
-                # 오른쪽 빨간 바 (시간에 따라 줄어듦)
-                bar_height = int((1 - elapsed / record_duration_per_gesture) * pv_height)
-                bar_height = max(bar_height, 0)
-                cv2.rectangle(color, (pv_width - 10, pv_height - bar_height), (pv_width, pv_height), (0, 0, 255), -1)
+                    # 오른쪽 빨간 바 (시간에 따라 줄어듦)
+                    bar_height = int((1 - elapsed / record_duration_per_gesture) * pv_height)
+                    bar_height = max(bar_height, 0)
+                    cv2.rectangle(color, (pv_width - 10, pv_height - bar_height), (pv_width, pv_height), (0, 0, 255), -1)
 
-                # 녹화 종료 조건
-                if elapsed >= record_duration_per_gesture:
-                    flag_recording = False
-                    current_action_index += 1
-                    record_end_time = time.time()
-            else:
-                elapsed = time.time() - record_end_time
-                # 오른쪽 위 초록 원
-                cv2.circle(color, (pv_width - 30, 30), 15, (0, 255, 0), -1)
-
-                # 왼쪽 위 텍스트: 대기중...(다음 action)
-                if current_action_index < len(actions_to_collect):
-                    next_action = actions_to_collect[current_action_index]
-                    wait_text = f"Ready for next...{target_finger} - {next_action}"
+                    # 녹화 종료 조건
+                    if elapsed >= record_duration_per_gesture:
+                        flag_recording = False
+                        current_action_index += 1
+                        record_end_time = time.time()
                 else:
-                    wait_text = "all done"
-                cv2.putText(color, wait_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (100, 100, 100), 2)
+                    elapsed = time.time() - record_end_time
+                    label_log[frame_idx] = "Natural"
+                    # 오른쪽 위 초록 원
+                    cv2.circle(color, (pv_width - 30, 30), 15, (0, 255, 0), -1)
 
-                # 오른쪽 초록 바 (시간에 따라 줄어듦)
-                bar_height = int((1 - elapsed / pause_duration_per_gesture) * pv_height)
-                bar_height = max(bar_height, 0)
-                cv2.rectangle(color, (pv_width - 10, pv_height - bar_height), (pv_width, pv_height), (0, 255, 0), -1)
+                    # 왼쪽 위 텍스트: 대기중...(다음 action)
+                    if current_action_index < len(actions_to_collect):
+                        next_action = actions_to_collect[current_action_index]
+                        wait_text = f"Ready for ...{target_finger} - {next_action}"
+                    else:
+                        wait_text = "all done"
+                    cv2.putText(color, wait_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 0), 2)
 
-                if elapsed >= pause_duration_per_gesture:
-                    flag_recording = True
-                    record_start_time = time.time()
+                    # 오른쪽 초록 바 (시간에 따라 줄어듦)
+                    bar_height = int((1 - elapsed / pause_duration_per_gesture) * pv_height)
+                    bar_height = max(bar_height, 0)
+                    cv2.rectangle(color, (pv_width - 10, pv_height - bar_height), (pv_width, pv_height), (0, 255, 0), -1)
 
-                # 화면 출력
+                    if elapsed >= pause_duration_per_gesture:
+                        flag_recording = True
+                        record_start_time = time.time()
+
+                    # 화면 출력
+            else:
+                label_log[frame_idx] = "Natural"
+
             cv2.imshow("Prompt", color)
 
+            if current_action_index == total_len:
+                print("done")
+                break
 
             end_t = time.time()
 
             ## fix to 15 fps
             latency = end_t - start_t
-            print("fps : ", 1/latency)
-            if latency < 0.066:
-                delay = int((0.066 - latency)*1000)
-                print("delay : ", delay)
-                cv2.waitKey(delay)
+            # print(f"fps : { 1/latency}, ms : {latency*1000}")
+            if latency < 0.056:     # for 15 FPS. need manual adjustment
+                delay = 0.056 - latency
+                time.sleep(delay)
+
+            latency = time.time() - start_t
+            print(f"added fps : { 1/latency}, ms : {latency*1000}")
 
         print("saving images in buffer ...")
         ### save images ###
@@ -234,19 +251,23 @@ def main():
             out_path = os.path.join(depth_image_dir, f"depth_{frame_idx:06d}.npy")
             np.save(out_path, depth.astype(np.float32))  # float32 그대로 저장
 
+        with open(f"dataset/subject_{subject}/trial_{trial}/{target_finger}/label.txt", 'w', encoding='utf-8') as f:
+            for key, value in label_log.items():
+                f.write(f'{key} {value}\n')
+
         print("done")
     finally:
-        # sock.close()
-        #
-        # # Stop PV and RM Depth AHAT streams ---------------------------------------
-        # sink_ht, sink_pv = init_variables[0], init_variables[1]
-        # sink_pv.detach()
-        # sink_ht.detach()
-        # producer.stop(hl2ss.StreamPort.PERSONAL_VIDEO)
-        # producer.stop(hl2ss.StreamPort.RM_DEPTH_AHAT)
-        #
-        # # Stop PV subsystem -------------------------------------------------------
-        # hl2ss_lnm.stop_subsystem_pv(host, hl2ss.StreamPort.PERSONAL_VIDEO)
+        sock.close()
+
+        # Stop PV and RM Depth AHAT streams ---------------------------------------
+        sink_ht, sink_pv = init_variables[0], init_variables[1]
+        sink_pv.detach()
+        sink_ht.detach()
+        producer.stop(hl2ss.StreamPort.PERSONAL_VIDEO)
+        producer.stop(hl2ss.StreamPort.RM_DEPTH_AHAT)
+
+        # Stop PV subsystem -------------------------------------------------------
+        hl2ss_lnm.stop_subsystem_pv(host, hl2ss.StreamPort.PERSONAL_VIDEO)
 
         cv2.destroyAllWindows()
 
