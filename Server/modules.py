@@ -34,7 +34,7 @@ baseline_variance = None
 
 
 class GestureClassfier():
-    def __init__(self, ckpt="./gestureclassifier/checkpoints/checkpoint.tar"):
+    def __init__(self, ckpt="./gestureclassifier/checkpoints/checkpoint.tar", seq_len=16):
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -57,7 +57,7 @@ class GestureClassfier():
 
 
         # default args
-        self.seq_len = 10
+        self.seq_len = seq_len
         self.idx_to_class = {0: 'CClock_index', 1: 'CClock_thumb',
                              2: 'Clock_index', 3: 'Clock_thumb',
                              4: 'Down_index', 5: 'Down_thumb',
@@ -71,8 +71,8 @@ class GestureClassfier():
 
 
     def run(self, input):
-        # input : queue (10, 63+15)  -> ndarray (10, 78)
-        input = np.array(input).reshape(10, -1)
+        # input : queue (self.seq_len, 63+15)  -> ndarray (self.seq_len, 78)
+        input = np.array(input).reshape(self.seq_len, -1)
 
         input = self._normalize(input)
         input = self._extract_partialhand(input)
