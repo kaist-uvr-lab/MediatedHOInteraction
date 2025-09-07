@@ -16,12 +16,13 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
 import pickle
 import matplotlib
+import statistics
 matplotlib.use('TkAgg')  # 또는 'Qt5Agg', 'QtAgg'
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 parser = argparse.ArgumentParser(description='DeepGRU Training')
-parser.add_argument('--ckpt', type=str, default="checkpoint.tar")
+parser.add_argument('--ckpt', type=str, default="checkpoint-40.tar")
 parser.add_argument('--use-cuda', action='store_true',
                     help='use CUDA if available',
                     default=True)
@@ -200,15 +201,20 @@ def main():
     # TN : Not exist (GT-sequence data doesn't contain gesture)
     TP, FP, FN, TN = 0, 0, 0, 0
 
+    # for confusion matrix
     perSubj = {}
     for sname in os.listdir(dataset_path):
-        perSubj[sname] = [0, 0, 0, 0, [], [], [], []]   # TP, FP, FN, TN, Thumb_gt, Thumb_pred, Intex_gt, Index_pred
+        perSubj[sname] = [[], [], [], []]   # TP, FP, FN, TN, Thumb_gt, Thumb_pred, Intex_gt, Index_pred
 
-    perGesture = {}
+
     gesture_list = ['Up_thumb', 'Down_thumb', 'Left_thumb', 'Right_thumb', 'Tap_thumb', 'Clock_thumb', 'CClock_thumb',
                     'Up_index', 'Down_index', 'Left_index', 'Right_index', 'Tap_index', 'Clock_index', 'CClock_index']
-    for gesture in gesture_list:
-        perGesture[gesture] = [0, 0, 0, 0]   # TP, FP, FN, TN
+
+    per_Subj_Gesture = {}
+    for sname in os.listdir(dataset_path):
+        per_Subj_Gesture[sname] = {}
+        for gesture in gesture_list:
+            per_Subj_Gesture[sname][gesture] = [0, 0, 0, 0]   # TP, FP, FN, TN
 
     cnt_diff_finger = 0
 
@@ -218,14 +224,14 @@ def main():
 
         if len(valid_pred_list) == 0:
             FN += 1
-            perSubj[sname][2] += 1
-            perGesture[valid_gt][2] += 1
+            per_Subj_Gesture[sname][valid_gt][2] += 1
+
             if valid_finger == 'thumb':
-                perSubj[sname][4].append(valid_label)
-                perSubj[sname][5].append('Natural')
+                perSubj[sname][0].append(valid_label)
+                perSubj[sname][1].append('Natural')
             else:
-                perSubj[sname][6].append(valid_label)
-                perSubj[sname][7].append('Natural')
+                perSubj[sname][2].append(valid_label)
+                perSubj[sname][3].append('Natural')
         else:
             for pred in valid_pred_list:
                 pred_label = pred.split('_')[0]
@@ -233,43 +239,113 @@ def main():
                 if valid_finger != pred_finger:
                     cnt_diff_finger += 1
                 elif valid_finger == 'thumb':
-                    perSubj[sname][4].append(valid_label)
-                    perSubj[sname][5].append(pred_label)
+                    perSubj[sname][0].append(valid_label)
+                    perSubj[sname][1].append(pred_label)
                 else:
-                    perSubj[sname][6].append(valid_label)
-                    perSubj[sname][7].append(pred_label)
+                    perSubj[sname][2].append(valid_label)
+                    perSubj[sname][3].append(pred_label)
 
                 if pred == valid_gt:
                     TP += 1
-                    perSubj[sname][0] += 1
-                    perGesture[valid_gt][0] += 1
+                    per_Subj_Gesture[sname][valid_gt][0] += 1
                 elif pred != valid_gt:
                     FP += 1
-                    perSubj[sname][1] += 1
-                    perGesture[valid_gt][1] += 1
+                    per_Subj_Gesture[sname][valid_gt][1] += 1
 
     precision = TP / (TP + FP)
     recall = TP / (TP + FN)
     f1 = 2 * precision * recall / (precision + recall)
     print(f"Overall F1 Score: {f1:.3f}")
 
+    sum_per_sname = {}
+    for sname, gestures in per_Subj_Gesture.items():
+        total = [0, 0, 0, 0]
+        for arr in gestures.values():
+            total = [a + b for a, b in zip(total, arr)]
+        sum_per_sname[sname] = total
 
-    for sname in perSubj:
-        TP, FP, FN, TN, _, _, _, _ = perSubj[sname]
+    sum_per_gesture = {gesture: [0, 0, 0, 0] for gesture in gesture_list}
+    for gestures in per_Subj_Gesture.values():
+        for gesture, arr in gestures.items():
+            sum_per_gesture[gesture] = [a + b for a, b in zip(sum_per_gesture[gesture], arr)]
+
+
+    for sname in sum_per_sname:
+        TP, FP, FN, TN = sum_per_sname[sname]
+
         precision = TP / (TP + FP)
         recall = TP / (TP + FN)
         f1 = 2 * precision * recall / (precision + recall)
-        print(f"{sname} F1 Score: {f1:.3f}")
+        print(f"{sname} F1 Score: {f1:.4f}")        #- 마이크로 평균(micro-F1): TP/FP/FN을 먼저 합계한 뒤 F1을 계산.
 
-    for gesture in perGesture:
-        TP, FP, FN, TN = perGesture[gesture]
+
+    for gesture in sum_per_gesture:
+        TP, FP, FN, TN = sum_per_gesture[gesture]
         precision = TP / (TP + FP)
         recall = TP / (TP + FN)
         f1 = 2 * precision * recall / (precision + recall)
-        print(f"{gesture} F1 Score: {f1:.3f}")
+        print(f"{gesture} F1 Score: {f1:.4f}")
+
+
+    # sname별 F1 리스트 저장
+    f1_per_sname = {sname: [] for sname in per_Subj_Gesture}
+    for sname, gestures in per_Subj_Gesture.items():
+        for arr in gestures.values():
+            TP, FP, FN, TN = arr
+            precision = TP / (TP + FP) if (TP + FP) else 0
+            recall = TP / (TP + FN) if (TP + FN) else 0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+            f1_per_sname[sname].append(f1)
+
+    # gesture별 F1 리스트 저장
+    f1_per_gesture = {gesture: [] for gesture in gesture_list}
+    for gestures in per_Subj_Gesture.values():
+        for gesture, arr in gestures.items():
+            TP, FP, FN, TN = arr
+            precision = TP / (TP + FP) if (TP + FP) else 0
+            recall = TP / (TP + FN) if (TP + FN) else 0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+            f1_per_gesture[gesture].append(f1)
+
+    # sname별 평균, 표준편차 출력
+    for sname, f1_list in f1_per_sname.items():
+        mean_f1 = statistics.mean(f1_list)
+        std_f1 = statistics.stdev(f1_list) if len(f1_list) > 1 else 0
+        print(f"{sname} 표준편차: {std_f1:.3f}")      # 매크로 평균(macro-F1): 각 항목에서 F1을 계산한 후 평균.
+
+
+    # gesture별 평균, 표준편차 출력
+    for gesture, f1_list in f1_per_gesture.items():
+        mean_f1 = statistics.mean(f1_list)
+        std_f1 = statistics.stdev(f1_list) if len(f1_list) > 1 else 0
+        print(f"{gesture} 표준편차: {std_f1:.3f}")
+
+
+
+    f1_matrix = {}
+    for sname, gestures in per_Subj_Gesture.items():
+        f1_matrix[sname] = {}
+        for gesture, arr in gestures.items():
+            TP, FP, FN, TN = arr
+            precision = TP / (TP + FP) if (TP + FP) else 0
+            recall = TP / (TP + FN) if (TP + FN) else 0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+            f1_matrix[sname][gesture] = round(f1, 4)  # 소수점 4자리
+
+    # DataFrame으로 변환 (행: sname, 열: gesture)
+    df_f1 = pd.DataFrame.from_dict(f1_matrix, orient='index')
+
+    print(df_f1)  # 콘솔 출력
+    # LaTeX 표로 변환하려면:
+    print(df_f1.to_latex(float_format="%.4f"))
+
+
+
+
 
     ## Confusion Matrix
     labels = ['Up', 'Down', 'Left', 'Right', 'Tap', 'Clock', 'CClock']
+    fingers = ['Thumb', 'Index']
 
     for finger_idx in range(2):
         print(f"Make confusion matrix for finger {finger_idx}")
@@ -277,8 +353,8 @@ def main():
         y_true_subj = []
         y_pred_subj = []
         for sname in perSubj:
-            y_true_subj.append(perSubj[sname][4 + finger_idx * 2])
-            y_pred_subj.append(perSubj[sname][5 + finger_idx * 2])
+            y_true_subj.append(perSubj[sname][finger_idx * 2])
+            y_pred_subj.append(perSubj[sname][1 + finger_idx * 2])
 
         cms = []
         for y_true, y_pred in zip(y_true_subj, y_pred_subj):
@@ -299,13 +375,19 @@ def main():
                 else:
                     annot[i, j] = f"{cm_mean[i, j]:.1f}\nsd: {cm_std[i, j]:.1f}\n{cm_percent[i, j]:.1f}%"
 
+        sns.set(font_scale=0.9)
+
         df_cm = pd.DataFrame(cm_mean, index=labels, columns=labels)
         plt.figure(figsize=(10, 10))
         sns.heatmap(df_cm, annot=annot, fmt='', cmap='magma', vmin=0, vmax=50,
                     xticklabels=labels, yticklabels=labels)
-        plt.xlabel('Predicted')
-        plt.ylabel('Actual')
-        plt.title('Confusion Matrix of all subjects (Mean ± SD)')
+
+        plt.xticks(fontsize=14)
+        plt.yticks(fontsize=14)
+
+        plt.xlabel('Predicted', fontsize=14)
+        plt.ylabel('Actual', fontsize=14)
+        plt.title(f"Confusion Matrix across subjects - {fingers[finger_idx]}", fontsize=14)
         plt.show()
 
     print(f"cnt_diff_finger = {cnt_diff_finger}")
