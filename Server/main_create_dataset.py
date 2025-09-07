@@ -36,6 +36,11 @@ Note
 - index로 circling하는건 자연스럽게 가능한 선에서만.
 
 - Rtx3090에서 Recording 속도 차이가 나면(short : 1 sec -> 15 frame, long : 2 sec -> 30), duration을 늘려서 맞춘 뒤, 모션을 조금 천천히하도록 유도
+
+# 2 : taejun 18.3 9.5 8.4
+# 3 : seokyoung 18.4 9.1 8.0
+# 4 : sujee 16.4 9.4 7.2 
+# 5 : heejung 17.8 9.3 7.8
 """
 
 
@@ -113,11 +118,11 @@ num_depth_count = 10
 prev_label, prev = "Init", time.time()
 
 
-fingers = ['thumb', 'index']
+fingers = ['index'] # 'thumb',
 
 if action_idx == 0:
     actions = ['Up', 'Down', 'Left', 'Right', 'Tap']
-    duration = 1.0  # short : 1 sec -> 15 frame, long : 2 sec -> 30
+    duration = 1.1  # short : 1 sec -> 15 frame, long : 2 sec -> 30
 else:
     actions = ['Clock', 'CClock', 'Natural']
     duration = 2.0
