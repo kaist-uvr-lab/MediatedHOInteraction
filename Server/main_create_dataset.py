@@ -57,7 +57,7 @@ state = 'Grasp'
 # fingers = ['thumb', 'index']
 
 # Set HoloLens2 Wi-Fi address
-host = '192.168.50.31'
+host = '192.168.50.31'  # 0.54
 
 """
 [데이터 수집 class]
