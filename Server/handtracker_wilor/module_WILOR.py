@@ -39,6 +39,8 @@ flag_rsrecord = False
 flag_time = False
 flag_render_mesh = False
 
+log_t_dict = {"start": [], "detection": [], "preprocess":[], "inference":[],"postprocess":[]}
+
 if flag_rsrecord:
     pipeline = rs.pipeline()
     config = rs.config()
@@ -65,29 +67,25 @@ if flag_rsrecord:
 
 
 class HandTracker_wilor():
-    def __init__(self, img_w=640, img_h=360):
+    def __init__(self, img_w=640, img_h=360, det_cooltime=10):
 
         curr_dir = os.path.dirname(os.path.abspath(__file__))
         checkpoint_path = os.path.join(curr_dir, 'pretrained_models', 'wilor_final.ckpt')
         cfg_path = os.path.join(curr_dir, 'pretrained_models', 'model_config.yaml')
         mano_path = os.path.join(curr_dir, 'mano_data')
 
-
         YOLO_hand_path = os.path.join(curr_dir, 'pretrained_models', 'detector.pt')
-        YOLO_obj_path = os.path.join(curr_dir, 'pretrained_models', 'yolo11m.pt')
 
         print("check input image scale. default : img_w=640, img_h=360")
 
         self.model, self.model_cfg = load_wilor(checkpoint_path=checkpoint_path, cfg_path=cfg_path, mano_path=mano_path)
         self.detector = YOLO(YOLO_hand_path)
         self.renderer = Renderer(self.model_cfg, faces=self.model.mano.faces)
-        self.detector_obj = YOLO(YOLO_obj_path)
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         self.model.to(self.device)
         self.detector.to(self.device)
-        self.detector_obj.to(self.device)
         self.model.eval()
 
         ## instead of dataset class, save configs
@@ -101,8 +99,8 @@ class HandTracker_wilor():
         self.img_w = img_w
         self.img_h = img_h
 
-        ## update target bbox for every 10 frame, move current bbox to target frame for 2 pixel per frame.
-        self.det_cooltime = 10
+        ## update target bbox for every 10 frame, otherwise, update it following from previous pose
+        self.det_cooltime = det_cooltime
 
         self.obj_cnt = 0
         self.bbox_cnt = 0
@@ -113,7 +111,6 @@ class HandTracker_wilor():
         self.boxes = None
         self.right = None
 
-        self.flag_detected = False
 
 
         ## do first iteration
@@ -123,9 +120,6 @@ class HandTracker_wilor():
 
         log_event("load input")
         detections = self.detect_hands(testImg, conf=0.3, verbose=False)
-        _ = self.detector_obj(testImg, verbose=False)
-
-        log_event("detect")
 
         if not detections:
             print("no hand in inital img")
@@ -210,7 +204,14 @@ class HandTracker_wilor():
         self.prev_uvd = all_uvds.copy()
         log_event("postprocess", flag_time)
 
-        return all_right, all_uvds, all_verts, all_cam_t
+        ## process only right hand visible
+        indices = np.where(np.asarray(all_right) == 1)[0]  ### check. 0: left, 1: right
+        if len(indices) > 0:
+            uvd_right = np.squeeze(np.asarray(all_uvds)[indices[0]])
+            return uvd_right
+        else:
+            return False
+
 
 
     def preprocess(self, img_cv2: np.array,
@@ -242,7 +243,7 @@ class HandTracker_wilor():
             # 3. generate image patch
             # if use_skimage_antialias:
             cvimg = img_cv2.copy()
-            if True:
+            if False:
                 # Blur image to avoid aliasing artifacts
                 downsampling_factor = ((bbox_size * 1.0) / patch_width)
                 # print(f'{downsampling_factor=}')
@@ -385,53 +386,6 @@ class HandTracker_wilor():
         ##
 
 
-    def detect_objs(self, img, depth_image_float, d_wrist):
-        self.obj_cnt += 1
-
-        ## run YOLO when every cooltime
-        if self.obj_cnt > self.det_cooltime:
-            self.flag_detected = True
-            self.obj_cnt = 0
-
-            mask = (depth_image_float > 0) & (depth_image_float - d_wrist <= 0.1)
-            mask = mask.astype(np.uint8) * 255
-            # masked_rgb = cv2.bitwise_and(img, img, mask=mask)
-
-            # 절반 사이즈로 YOLO 돌린후 결과*2
-            # resized_img = cv2.resize(img, (self.img_w // 2, self.img_h // 2), interpolation=cv2.INTER_AREA)
-            results = self.detector_obj(img, verbose=False)
-
-            # debug_vis = img.copy()
-            obj_bb_nearby = []
-            for result in results:
-                for box in result.boxes:
-                    cls = int(box.cls[0])
-                    label = result.names[cls]
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-
-                    # cv2.rectangle(debug_vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                    # cv2.putText(debug_vis, f"{label}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-                    if label == 'person':
-                        continue
-
-                    cx = (x1 + x2) // 2
-                    cy = (y1 + y2) // 2
-
-                    if mask[int(cy), int(cx)] == False:
-                        continue
-
-                    # x1, y1, x2, y2 = 2 * x1, 2 * y1, 2 * x2, 2 * y2
-                    obj_bb_nearby.append([x1, y1, x2, y2, label])
-
-            # cv2.imshow("debug", debug_vis)
-
-            return obj_bb_nearby
-        else:
-            self.flag_detected = False
-            return []
-
-
 def calc_pred_center(coords):
     x_min = np.min(coords[:, 0])
     y_min = np.min(coords[:, 1])
@@ -458,13 +412,19 @@ def project_full_img(points, cam_trans, focal_length, img_res):
     return V_2d[..., :-1]
 
 def log_event(label, flag_time=False):
-    global prev_label, prev
+    global prev_label, prev, log_t_dict
 
     now = time.time()
+    latency = now - prev
     if flag_time:
-        print(f"{prev_label} ~ {label}: {now - prev:.3f}")
+        print(f"{prev_label} ~ {label}: {latency:.4f}")
     prev_label = label
     prev = now
+
+    # if label in log_t_dict:
+    #     log_t_dict[label].append(latency)
+        # if len(log_t_dict[label]) > 100:
+        #     print(f"avg latency for {label}: {np.average(np.array(log_t_dict[label]))}")
 
 
 

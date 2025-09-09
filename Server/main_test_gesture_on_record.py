@@ -22,7 +22,8 @@ matplotlib.use('TkAgg')  # 또는 'Qt5Agg', 'QtAgg'
 
 # ----------------------------------------------------------------------------------------------------------------------
 parser = argparse.ArgumentParser(description='DeepGRU Training')
-parser.add_argument('--ckpt', type=str, default="checkpoint-40.tar")
+parser.add_argument('--ckpt', type=str, default="checkpoint.tar")       # checkpoint.tar --model -1
+parser.add_argument('--model', type=int, default=-1)        # 0: base, 1:ours, 2~6:ablation
 parser.add_argument('--use-cuda', action='store_true',
                     help='use CUDA if available',
                     default=True)
@@ -33,22 +34,26 @@ args = parser.parse_args()
 use_cuda = torch.cuda.is_available() and args.use_cuda
 
 dataset_path = f"./dataset"
+ckpt_path = f"./gestureclassifier/checkpoints/{args.ckpt}"
 
 seq_len = 16
-threshold_num = 4
+threshold_num = 3
 
 flag_vis = False
 # record 2.5 sec ready, 1.5 sec record
 # ----------------------------------------------------------------------------------------------------------------------
 def main():
     results = []
-    result_path = "result.pkl"
+    result_path = f"./log/result-{args.ckpt}.pkl"
+
 
     if not os.path.exists(result_path):
+
         # Load the dataset
         dataset = []
         for sname in sorted(os.listdir(dataset_path)):
             spath = os.path.join(dataset_path, sname)  # test/subject_0
+
 
             for tname in sorted(os.listdir(spath)):
                 tpath = os.path.join(spath, tname)  # test/subject_0/trial_0
@@ -57,15 +62,16 @@ def main():
                     fpath = os.path.join(tpath, fname)  # test/subject_0/trial_0/thumb      # or index
 
                     rgb_path = os.path.join(fpath, "rgb")
-                    depth_path = os.path.join(fpath, "depth")
+                    # depth_path = os.path.join(fpath, "depth")
                     # label_path = os.path.join(fpath, "label.txt")
 
                     datset_small = []
                     for seq in sorted(os.listdir(rgb_path)):  # seq : 1_CClock
+
                         rgb_file_path = os.path.join(rgb_path, seq)
                         rgb_list = os.listdir(rgb_file_path)
-                        depth_file_path = os.path.join(depth_path, seq)
-                        depth_list = os.listdir(depth_file_path)
+                        # depth_file_path = os.path.join(depth_path, seq)
+                        # depth_list = os.listdir(depth_file_path)
 
                         # rgb
                         rgb_files = {}
@@ -73,13 +79,13 @@ def main():
                             frame_idx = int(r_path.split('_')[1].split('.')[0])
                             rgb_files[int(frame_idx)] = os.path.join(rgb_file_path, r_path)
 
-                        # depth
-                        depth_files = {}
-                        for d_path in depth_list:
-                            frame_idx = int(d_path.split('_')[1].split('.')[0])
-                            depth_files[int(frame_idx)] = os.path.join(depth_file_path, d_path)
+                        # # depth
+                        # depth_files = {}
+                        # for d_path in depth_list:
+                        #     frame_idx = int(d_path.split('_')[1].split('.')[0])
+                        #     depth_files[int(frame_idx)] = os.path.join(depth_file_path, d_path)
 
-                        datset_small.append([seq.split('_')[1], rgb_files, depth_files])
+                        datset_small.append([seq.split('_')[1], rgb_files])#, depth_files])
 
                     # # label
                     # label_file = {}
@@ -92,7 +98,7 @@ def main():
 
         # Instantiate models
         track_hand = HandTracker_our_v2()
-        track_gesture = GestureClassfier(seq_len=seq_len)
+        track_gesture = GestureClassfier(ckpt=ckpt_path, seq_len=seq_len, model_opt=args.model)
 
         if flag_vis:
             cv2.namedWindow('Prompt')
@@ -101,7 +107,7 @@ def main():
         for db in dataset:
             sname, tname, fname, datset_small = db
 
-            for label, rgb_files, depth_files in tqdm(datset_small, desc=f"testing on {sname}, {tname}, {fname}"):
+            for label, rgb_files in tqdm(datset_small, desc=f"testing on {sname}, {tname}, {fname}"): #depth_files
                 # print(f"current gt : {label}")
 
                 len_clip = len(rgb_files)
@@ -166,7 +172,7 @@ def main():
                         continue
 
                     gesture_idx, gesture = track_gesture.run(queue_righthand)       # queue (seq_len, 63+15)
-                    # print(f"pred : {gesture}")
+
 
                     ## valid gesture if same gesture continously detected
                     if prev_gesture == gesture and gesture != 'Natural':
@@ -179,14 +185,18 @@ def main():
                         valid_pred_list.append(gesture)
 
 
+                    # print(f"{valid_gt} : {gesture} - {pose_path_split[-6:-1]}")
                     #### visualize
                     if flag_vis:
-                        for uvd_hand in all_uvds:
-                            color = draw_2d_skeleton(color, uvd_hand)
+                        color = cv2.imread(rgb_files[frame_idx])
+                        uvd_hand = data[:-15].reshape(21, 3)
+                        color = draw_2d_skeleton(color, uvd_hand)
                         cv2.imshow("Prompt", color)
-                        cv2.waitKey(1)
+                        cv2.waitKey(0)
 
+                valid_pred_list = list(set(valid_pred_list))
                 results.append([sname, valid_gt, valid_pred_list])
+
 
         with open(result_path, 'wb') as f:  # wb = write binary
             pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -218,6 +228,7 @@ def main():
 
     cnt_diff_finger = 0
 
+
     for sname, valid_gt, valid_pred_list in results:
         valid_label = valid_gt.split('_')[0]
         valid_finger = valid_gt.split('_')[1]
@@ -236,9 +247,9 @@ def main():
             for pred in valid_pred_list:
                 pred_label = pred.split('_')[0]
                 pred_finger = pred.split('_')[1]
-                if valid_finger != pred_finger:
-                    cnt_diff_finger += 1
-                elif valid_finger == 'thumb':
+                # if valid_finger != pred_finger:
+                #     cnt_diff_finger += 1
+                if valid_finger == 'thumb':
                     perSubj[sname][0].append(valid_label)
                     perSubj[sname][1].append(pred_label)
                 else:
@@ -269,21 +280,21 @@ def main():
         for gesture, arr in gestures.items():
             sum_per_gesture[gesture] = [a + b for a, b in zip(sum_per_gesture[gesture], arr)]
 
-
+    eps = 1e-10
     for sname in sum_per_sname:
         TP, FP, FN, TN = sum_per_sname[sname]
 
-        precision = TP / (TP + FP)
-        recall = TP / (TP + FN)
-        f1 = 2 * precision * recall / (precision + recall)
+        precision = TP / (TP + FP + eps)
+        recall = TP / (TP + FN + eps)
+        f1 = 2 * precision * recall / (precision + recall + eps)
         print(f"{sname} F1 Score: {f1:.4f}")        #- 마이크로 평균(micro-F1): TP/FP/FN을 먼저 합계한 뒤 F1을 계산.
 
 
     for gesture in sum_per_gesture:
         TP, FP, FN, TN = sum_per_gesture[gesture]
-        precision = TP / (TP + FP)
-        recall = TP / (TP + FN)
-        f1 = 2 * precision * recall / (precision + recall)
+        precision = TP / (TP + FP + eps)
+        recall = TP / (TP + FN + eps)
+        f1 = 2 * precision * recall / (precision + recall + eps)
         print(f"{gesture} F1 Score: {f1:.4f}")
 
 
@@ -292,9 +303,9 @@ def main():
     for sname, gestures in per_Subj_Gesture.items():
         for arr in gestures.values():
             TP, FP, FN, TN = arr
-            precision = TP / (TP + FP) if (TP + FP) else 0
-            recall = TP / (TP + FN) if (TP + FN) else 0
-            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+            precision = TP / (TP + FP + eps) if (TP + FP) else 0
+            recall = TP / (TP + FN + eps) if (TP + FN) else 0
+            f1 = 2 * precision * recall / (precision + recall + eps) if (precision + recall) else 0
             f1_per_sname[sname].append(f1)
 
     # gesture별 F1 리스트 저장
@@ -302,9 +313,9 @@ def main():
     for gestures in per_Subj_Gesture.values():
         for gesture, arr in gestures.items():
             TP, FP, FN, TN = arr
-            precision = TP / (TP + FP) if (TP + FP) else 0
-            recall = TP / (TP + FN) if (TP + FN) else 0
-            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+            precision = TP / (TP + FP) + eps if (TP + FP) else 0
+            recall = TP / (TP + FN + eps) if (TP + FN) else 0
+            f1 = 2 * precision * recall / (precision + recall + eps) if (precision + recall) else 0
             f1_per_gesture[gesture].append(f1)
 
     # sname별 평균, 표준편차 출력
@@ -327,9 +338,9 @@ def main():
         f1_matrix[sname] = {}
         for gesture, arr in gestures.items():
             TP, FP, FN, TN = arr
-            precision = TP / (TP + FP) if (TP + FP) else 0
-            recall = TP / (TP + FN) if (TP + FN) else 0
-            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0
+            precision = TP / (TP + FP + eps) if (TP + FP) else 0
+            recall = TP / (TP + FN + eps) if (TP + FN) else 0
+            f1 = 2 * precision * recall / (precision + recall + eps) if (precision + recall) else 0
             f1_matrix[sname][gesture] = round(f1, 4)  # 소수점 4자리
 
     # DataFrame으로 변환 (행: sname, 열: gesture)
@@ -344,7 +355,7 @@ def main():
 
 
     ## Confusion Matrix
-    labels = ['Up', 'Down', 'Left', 'Right', 'Tap', 'Clock', 'CClock']
+    labels = ['Up', 'Down', 'Left', 'Right', 'Tap', 'Clock', 'CClock', 'Natural']
     fingers = ['Thumb', 'Index']
 
     for finger_idx in range(2):
@@ -379,7 +390,7 @@ def main():
 
         df_cm = pd.DataFrame(cm_mean, index=labels, columns=labels)
         plt.figure(figsize=(10, 10))
-        sns.heatmap(df_cm, annot=annot, fmt='', cmap='magma', vmin=0, vmax=50,
+        sns.heatmap(df_cm, annot=annot, fmt='', cmap='magma', vmin=0, vmax=10,
                     xticklabels=labels, yticklabels=labels)
 
         plt.xticks(fontsize=14)
@@ -387,11 +398,13 @@ def main():
 
         plt.xlabel('Predicted', fontsize=14)
         plt.ylabel('Actual', fontsize=14)
-        plt.title(f"Confusion Matrix across subjects - {fingers[finger_idx]}", fontsize=14)
+        plt.title(f"Confusion Matrix (mean ± sd) - {fingers[finger_idx]}", fontsize=16)
         plt.show()
 
     print(f"cnt_diff_finger = {cnt_diff_finger}")
 
 # ----------------------------------------------------------------------------------------------------------------------
+
+
 if __name__ == '__main__':
     main()

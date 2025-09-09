@@ -9,7 +9,7 @@ import struct
 import json
 from PIL import Image, ImageDraw, ImageFont
 
-from modules import HandTracker_our_v2, GestureClassfier
+from modules import HandTracker_our, HandTracker_our_v2, GestureClassfier, ObjTracker
 from collections import deque
 from utils.visualize import draw_2d_skeleton
 
@@ -23,9 +23,9 @@ import socket
 import multiprocessing as mp
 
 
-
 ## args ##
-flag_gesture = False
+ckpt = "checkpoint-40.tar"
+flag_interaction_detect = False
 
 ## Set HoloLens2 wifi address ##
 host = '192.168.50.31'
@@ -35,7 +35,7 @@ host = '192.168.50.31'
 calibration_path = 'calibration'
 
 # Front RGB camera parameters
-pv_width = 640
+pv_width = 640      # (1080, 1920), (720, 1280), (360, 640), (240, 424)
 pv_height = 360
 pv_fps = 30
 
@@ -43,17 +43,25 @@ pv_fps = 30
 buffer_size = 10
 
 # process depth image per n frame
-num_depth_count = 10     # 0 for only rgb
+num_depth_count = 0    # 0 for only rgb
 
-queue_righthand = deque([], maxlen=10)
+# gesture sequence args
+seq_len = 16
+threshold_num = 5
 
+
+prev = time.time()
+prev_label = "init"
 
 def main():
     ###################### init models ######################
 
     track_hand = HandTracker_our_v2()
 
-    track_gesture = GestureClassfier()
+    track_gesture = GestureClassfier(ckpt=f"./gestureclassifier/checkpoints/{ckpt}", seq_len=seq_len, model_opt=1)
+
+    if flag_interaction_detect:
+        track_obj = ObjTracker()
 
     ###################### init comm. with hololens2 ######################
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -64,17 +72,26 @@ def main():
     cv2.moveWindow(winname='Prompt', x=2000, y=200)
 
     idx_depth = 0
-    debug_idx = 0
+    idx = 0
 
     gesture_idx = -1
     flag_cooldown = False
     t_cooldown = 0.0
 
-    gesture = None
+    queue_righthand = deque([], maxlen=seq_len)
+    flag_gesture = False
 
+    prev_gesture = None
+    gesture_cnt = 0
+    valid_gesture = None
+    valid_gesture_idx = -1
+
+    debug_pose = np.ones((21, 3))
+
+    log_t = []
     try:
         while True:
-            debug_idx+=1
+            idx+=1
 
             # intermittently receive depth image
             idx_depth += 1
@@ -83,7 +100,6 @@ def main():
                 flag_depth = True
             else:
                 flag_depth = False
-            flag_depth = True
 
             ###################### receive input ######################
             result = receive_images(init_variables, flag_depth)
@@ -98,46 +114,104 @@ def main():
                 cv2.imshow('Depth', depth / max_depth)  # scale for visibility
             cv2.waitKey(1)
 
+
             color = cv2.resize(color, dsize=(640, 360), interpolation=cv2.INTER_AREA)
 
             ###################### process hand ######################
 
-            outs = track_hand.run(np.copy(color))
-            if not outs:
+            outs = track_hand.run(np.copy(color))   # uvd_right. return only right hand when visible
+            if not isinstance(outs, np.ndarray):
                 continue
-
-            all_right, all_uvds, all_verts, all_cam_t = outs
-
-
-            ###################### contact prediction ######################
-            # handtracker_wilor/module_WILOR.py main함수에 있음.
-
 
 
             ###################### process gesture ######################
-            ## process only right hand visible
-            indices = np.where(np.asarray(all_right) == 1)[0]  ### check. 0: left, 1: right
-            if len(indices) > 0:
-                uvd_right = np.squeeze(np.asarray(all_uvds)[indices[0]])
+            # preprocess joint pose
+            angle_label = track_gesture._compute_ang_from_joint(outs)
+            data = np.concatenate([outs.flatten(), angle_label])
+            queue_righthand.append(data)
 
-                if flag_gesture:
-                    # preprocess joint pose
-                    angle_label = track_gesture._compute_ang_from_joint(uvd_right)
-                    data = np.concatenate([uvd_right.flatten(), angle_label])
+            ###################### interaction prediction ######################
+            """
+            - 손 위치 depth로부터 10cm 내에서 detect된 물체 boundingbox만 체크
+            - palm 2D pose로부터 10cm 내에 물체 bb가 있으면 gesture recognizer 활성화. 
+            """
 
-                    queue_righthand.append(data)
+            if flag_depth and flag_interaction_detect:
 
-                    if len(queue_righthand) < 10:
-                        continue
+                uv_wrist = outs[0, :-1]
 
-                    gesture_idx, gesture = track_gesture.run(queue_righthand)  # queue (10, 63+15)
+                if int(uv_wrist[1]) > pv_height or int(uv_wrist[0]) > pv_width:
+                    flag_gesture = False
+                else:
+                    d_wrist = depth[int(uv_wrist[1]), int(uv_wrist[0])]
+
+                    palm_points_2d = outs[[0, 4, 8, 12, 16, 20], :2]
+                    palm_uv = np.mean(palm_points_2d, axis=0)
+
+                    obj_nearby_list = track_obj.detect_objs_no_cnt(color, depth, d_wrist)
+
+                    # 손 근처 물체 BB 시각화.
+                    if len(obj_nearby_list) > 0:
+                        vis_obj = color.copy()
+                        for obj_nearby in obj_nearby_list:
+                            # draw every nearby object bb in green
+                            cv2.rectangle(vis_obj, (obj_nearby[0], obj_nearby[1]), (obj_nearby[2], obj_nearby[3]),
+                                          (0, 255, 0), 2)
+                            cv2.putText(vis_obj, f'{obj_nearby[-1]}', (obj_nearby[0], obj_nearby[1] - 10),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+                        ## activate gesture recognizer ##
+                        for obj_nearby in obj_nearby_list:
+                            cx, cy = (obj_nearby[0] + obj_nearby[2]) // 2, (obj_nearby[1] + obj_nearby[3]) // 2
+                            distance = np.sqrt((cx - palm_uv[0]) ** 2 + (cy - palm_uv[1]) ** 2)
+
+                            if distance < 70.0:
+                                # draw object bb if it's close to hand, as yellow
+                                cv2.rectangle(vis_obj, (obj_nearby[0], obj_nearby[1]), (obj_nearby[2], obj_nearby[3]),
+                                              (0, 255, 255), 2)
+                                cv2.putText(vis_obj, f'{obj_nearby[-1]}', (obj_nearby[0], obj_nearby[1] - 10),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                flag_gesture = True
+
+                                # if any of object are close to hand, flag_gesture is True and no need to iterate
+                                break
+                            else:
+                                flag_gesture = False
+
+                        cv2.imshow("obj", vis_obj)
+                    # elif track_obj.flag_detected:  # off the gesture only when no nearby bb has found from obj detection
+                    #     flag_gesture = False
+
+
+            if flag_gesture or not flag_interaction_detect:
+                if len(queue_righthand) < seq_len:
+                    continue
+
+                # t1 = time.time()
+                gesture_idx, gesture = track_gesture.run(queue_righthand)  # queue (10, 63+15)
+                # log_t.append(time.time() - t1)
+                #
+                # if len(log_t) > 100:
+                #     print("avg : ", np.average(np.array(log_t)))
+            else:
+                gesture = None
+
+            ## valid gesture if same gesture continously detected
+            if prev_gesture == gesture and gesture != 'Natural':
+                gesture_cnt += 1
+            else:
+                gesture_cnt = 0
+            prev_gesture = gesture
+
+            if gesture_cnt > threshold_num:
+                valid_gesture = gesture
+                valid_gesture_idx = gesture_idx
 
             ###################### visualize ######################
-            for uvd_hand in all_uvds:
-                color = draw_2d_skeleton(color, uvd_hand)
+            color = draw_2d_skeleton(color, outs[:, :2])
 
-            if gesture != None and gesture != "Natural":
-                cv2.putText(color, f'{gesture.upper()}',
+            if valid_gesture != None and valid_gesture != "Natural":
+                cv2.putText(color, f'{valid_gesture.upper()}',
                             org=(20, 50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=2, color=(0, 0, 255),
                             thickness=3)
 
@@ -147,21 +221,26 @@ def main():
 
             ###################### send to hololens2 ######################
             ## check cooldown. 0.5 sec delay for each gesture
-            if time.time() - t_cooldown > 2.0:
+            if time.time() - t_cooldown > 0.5:
                 flag_cooldown = False
 
-            if not flag_cooldown and gesture != None and gesture != "Natural":# and flag_contact_fin:
-                # dummy = np.asarray([debug_idx, float(gesture_idx)], dtype=np.float64)
-                send_data = gesture
+            if not flag_cooldown and valid_gesture != None and valid_gesture != "Natural":
+
+                send_data = outs.flatten().tolist() + [float(valid_gesture_idx), float(time.time()*1000)]
 
                 flag_cooldown = True
                 t_cooldown = time.time()
-                print("sending ... ", send_data)
+                print("sending ... ", valid_gesture)
             else:
                 # dummy = np.asarray([debug_idx, float(-1)], dtype=np.float64)
-                send_data = "."
+                # send_data = ["None", str(time.time()*1000)]
+                debug_pose = np.ones((63))
 
-            send_bytes = send_data.encode('utf-8')
+                send_data = debug_pose.tolist() + [float(-1), float(time.time()*1000)]
+
+            fmt = f"{len(send_data)}d"
+            send_bytes = struct.pack(fmt, *send_data)
+
             sock.sendto(send_bytes, (host, 5005))
 
     finally:
@@ -234,6 +313,7 @@ def receive_images(init_variables, flag_depth):
 
     # Preprocess frames ---------------------------------------------------
     color = data_pv.payload.image
+
     pv_z = None
     if flag_depth:
         depth = data_ht.payload.depth  # hl2ss_3dcv.rm_depth_undistort(data_ht.payload.depth, calibration_ht.undistort_map)
@@ -296,13 +376,12 @@ def receive_images(init_variables, flag_depth):
     return color, pv_z
 
 
-def log_event(label):
+def log_event(label, flag_time=False):
     global prev_label, prev
 
     now = time.time()
-    # timestamps.append(now)
-    # labels.append(label)
-    print(f"{prev_label} ~ {label}: {now - prev:.3f}")
+    if flag_time:
+        print(f"{prev_label} ~ {label}: {now - prev:.3f}")
     prev_label = label
     prev = now
 

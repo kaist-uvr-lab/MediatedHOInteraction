@@ -15,9 +15,10 @@ import copy
 
 # from tensorflow.keras.models import load_model
 from collections import deque
+from ultralytics import YOLO
 
 
-# from handtracker.module_SARTE import HandTracker
+from handtracker.module_SARTE import HandTracker
 from handtracker_wilor.module_WILOR import HandTracker_wilor
 from gestureclassifier.model_update import create_model
 
@@ -32,13 +33,124 @@ finger_joints = {
 tip_joints = [4, 8, 12, 16, 20]
 baseline_variance = None
 
-
-class GestureClassfier():
-    def __init__(self, ckpt="./gestureclassifier/checkpoints/checkpoint.tar", seq_len=16):
+class ObjTracker():
+    def __init__(self, det_cooltime=10):
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-        self.model_gesture = create_model(num_features=60, num_classes=15)
+        curr_dir = os.path.dirname(os.path.abspath(__file__))
+        YOLO_obj_path = os.path.join(curr_dir, 'pretrained_models', 'yolo11m.pt')
+        self.detector_obj = YOLO(YOLO_obj_path)
+
+        self.detector_obj.to(self.device)
+
+        testImg = cv2.imread(os.path.join(curr_dir, './handtracker_wilor/demo_img/test1.jpg'))
+        testImg = cv2.resize(testImg, (640, 360))
+        _ = self.detector_obj(testImg, verbose=False)
+
+        self.det_cooltime = det_cooltime
+        self.obj_cnt = 0
+        self.flag_detected = False
+
+    def detect_objs(self, img, depth_image_float, d_wrist):
+        self.obj_cnt += 1
+
+        ## run YOLO when every cooltime
+        if self.obj_cnt > self.det_cooltime:
+            self.flag_detected = True
+            self.obj_cnt = 0
+
+            mask = (depth_image_float > 0) & (depth_image_float - d_wrist <= 0.1)
+            mask = mask.astype(np.uint8) * 255
+            # masked_rgb = cv2.bitwise_and(img, img, mask=mask)
+
+            # 절반 사이즈로 YOLO 돌린후 결과*2
+            # resized_img = cv2.resize(img, (self.img_w // 2, self.img_h // 2), interpolation=cv2.INTER_AREA)
+            results = self.detector_obj(img, verbose=False)
+
+            # debug_vis = img.copy()
+            obj_bb_nearby = []
+            for result in results:
+                for box in result.boxes:
+                    cls = int(box.cls[0])
+                    label = result.names[cls]
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                    # cv2.rectangle(debug_vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                    # cv2.putText(debug_vis, f"{label}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+                    if label == 'person':
+                        continue
+
+                    cx = (x1 + x2) // 2
+                    cy = (y1 + y2) // 2
+
+                    if mask[int(cy), int(cx)] == False:
+                        continue
+
+                    # x1, y1, x2, y2 = 2 * x1, 2 * y1, 2 * x2, 2 * y2
+                    obj_bb_nearby.append([x1, y1, x2, y2, label])
+
+            # cv2.imshow("debug", debug_vis)
+
+            return obj_bb_nearby
+        else:
+            self.flag_detected = False
+            return []
+
+
+    def detect_objs_no_cnt(self, img, depth_image_float, d_wrist):
+        self.flag_detected = True
+
+        mask = (depth_image_float > 0) & (depth_image_float - d_wrist <= 0.1)
+        mask = mask.astype(np.uint8) * 255
+        # masked_rgb = cv2.bitwise_and(img, img, mask=mask)
+
+        # 절반 사이즈로 YOLO 돌린후 결과*2
+        # resized_img = cv2.resize(img, (self.img_w // 2, self.img_h // 2), interpolation=cv2.INTER_AREA)
+        results = self.detector_obj(img, verbose=False)
+
+        # debug_vis = img.copy()
+        obj_bb_nearby = []
+        for result in results:
+            for box in result.boxes:
+                cls = int(box.cls[0])
+                label = result.names[cls]
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                # cv2.rectangle(debug_vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                # cv2.putText(debug_vis, f"{label}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+                if label == 'person':
+                    continue
+
+                cx = (x1 + x2) // 2
+                cy = (y1 + y2) // 2
+
+                if mask[int(cy), int(cx)] == False:
+                    continue
+
+                # x1, y1, x2, y2 = 2 * x1, 2 * y1, 2 * x2, 2 * y2
+                obj_bb_nearby.append([x1, y1, x2, y2, label])
+
+        # cv2.imshow("debug", debug_vis)
+
+        return obj_bb_nearby
+
+
+class GestureClassfier():
+    def __init__(self, ckpt="./gestureclassifier/checkpoints/checkpoint.tar", seq_len=16, model_opt=1):
+
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+        if model_opt == 0 or model_opt >=2 and model_opt < 6:
+            num_feature = 78
+            self.flag_partial = False
+        else:
+            num_feature = 60
+            self.flag_partial = True
+
+        self.model_gesture = create_model(num_features=num_feature, num_classes=15, model_opt=model_opt)
 
         checkpoint = torch.load(ckpt)
         state_dict = checkpoint['model_state_dict']
@@ -68,19 +180,28 @@ class GestureClassfier():
                              13: 'Up_index', 14: 'Up_thumb'}
         self.partial_idx = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 16, 17, 20]
 
-
+        # self.log_t = deque([], maxlen=100)
 
     def run(self, input):
         # input : queue (self.seq_len, 63+15)  -> ndarray (self.seq_len, 78)
         input = np.array(input).reshape(self.seq_len, -1)
 
         input = self._normalize(input)
-        input = self._extract_partialhand(input)
+        if self.flag_partial:
+            input = self._extract_partialhand(input)
 
         input = torch.from_numpy(input).to(self.device).unsqueeze(0).float()
 
         with torch.no_grad():
+            # t1 = time.time()
             output = self.model_gesture(input)
+        #     t2 = time.time()
+        #     self.log_t.append(t2 - t1)
+        #
+        # if len(self.log_t) == 100:
+        #     log_t = np.array(self.log_t)
+        #     avg = np.average(log_t)
+        #     print("avg t : ", avg)
 
         pred = output.argmax(1).cpu().numpy()
         gesture = self.idx_to_class[pred[0]]
@@ -163,92 +284,47 @@ class HandTracker_our_v2():
 
 
 
-# class HandTracker_our():
-#     def __init__(self):
-#         self.track_hand = HandTracker()
-#
-#     def run(self, input):
-#         result_hand = self.track_hand.Process_single_newroi(input)
-#
-#         return result_hand
-
-
-class HandTracker_mp():
-    def __init__(self, ckpt=None):
-
-        # self.mp_drawing = mp.solutions.drawing_utils
-        # self.mp_drawing_styles = mp.solutions.drawing_styles
-        self.mp_hands = mp.solutions.hands
-
-        print("init hand tracker")
-        torch.backends.cudnn.benchmark = True
-        self.mediahand = self.mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.3)
+class HandTracker_our():
+    def __init__(self):
+        self.track_hand = HandTracker()
 
     def run(self, input):
-        img_height = input.shape[0]
-        img_width = input.shape[1]
-
-        input = cv2.flip(input, 1)
-        results = self.mediahand.process(cv2.cvtColor(input, cv2.COLOR_BGR2RGB))
-
-        result_hand = []
-        if results.multi_hand_landmarks == None:
-            return None
-
-        for hand_landmarks in results.multi_hand_landmarks:
-            for _, landmark in enumerate(hand_landmarks.landmark):
-                x = img_width - int(landmark.x * img_width)
-                y = int(landmark.y * img_height)
-                z = landmark.z
-                result_hand.append([x, y, z])
-        result_hand = np.asarray(result_hand)
+        result_hand = self.track_hand.Process_single_newroi(input)
 
         return result_hand
 
 
-# class ObjTracker():
-#     def __init__(self):
-#         self.model = YOLO("./objecttracker/yolo11n.yaml")
-#         self.model = YOLO("./objecttracker/yolo11n.pt").to('cuda')
-#         self.idx = 0
+# class HandTracker_mp():
+#     def __init__(self, ckpt=None):
 #
-#     def run(self, img, flag_vis=False): # input : img_cv
-#         # imgSize = (img.shape[0], img.shape[1])  # (360, 640)
+#         # self.mp_drawing = mp.solutions.drawing_utils
+#         # self.mp_drawing_styles = mp.solutions.drawing_styles
+#         self.mp_hands = mp.solutions.hands
 #
-#         # results = self.model(img, conf=0.4, device=0)
-#         results = self.model(img, conf=0.4, device=0, verbose=False, classes=[0, 39, 41, 43, 44, 46, 47, 64, 65, 67])
-#         result = results[0]
+#         print("init hand tracker")
+#         torch.backends.cudnn.benchmark = True
+#         self.mediahand = self.mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.3)
 #
-#         if flag_vis:
-#             plots = result.plot()
-#             cv2.imshow("object tracker results", plots)
-#             cv2.waitKey(1)
+#     def run(self, input):
+#         img_height = input.shape[0]
+#         img_width = input.shape[1]
 #
-#         boxes = result.boxes
+#         input = cv2.flip(input, 1)
+#         results = self.mediahand.process(cv2.cvtColor(input, cv2.COLOR_BGR2RGB))
 #
-#         center_dict = {}
-#         flag_hand = False
-#         for box in boxes:
-#             bbox = np.squeeze(box.xyxy.cpu().numpy())
-#             cls = int(box.cls.cpu().numpy()[0])
-#             if cls == 0:
-#                 # hand detected
-#                 flag_hand = True
-#             if cls != 0:
-#                 center_x = int((bbox[0] + bbox[2]) / 2)
-#                 center_y = int((bbox[1] + bbox[3]) / 2)
-#                 center_dict[cls] = [center_x, center_y]
+#         result_hand = []
+#         if results.multi_hand_landmarks == None:
+#             return None
 #
-#         ## visualize obj centers
-#         # if flag_vis:
-#             # debug = np.copy(img)
-#             # for center in center_list:
-#             #     cv2.circle(debug, center, 5, color=[255, 255, 0], thickness=-1, lineType=cv2.LINE_AA)
-#             # cv2.imshow("object centers", debug)
-#             # cv2.waitKey(1)
+#         for hand_landmarks in results.multi_hand_landmarks:
+#             for _, landmark in enumerate(hand_landmarks.landmark):
+#                 x = img_width - int(landmark.x * img_width)
+#                 y = int(landmark.y * img_height)
+#                 z = landmark.z
+#                 result_hand.append([x, y, z])
+#         result_hand = np.asarray(result_hand)
 #
-#         return flag_hand, center_dict
-#
+#         return result_hand
 
 
 # 0: 'person', 41: 'cup',
