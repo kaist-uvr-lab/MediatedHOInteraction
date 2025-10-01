@@ -21,6 +21,7 @@ import hl2ss_3dcv
 import hl2ss_utilities
 import socket
 import multiprocessing as mp
+import keyboard
 
 
 ## args ##
@@ -43,7 +44,7 @@ pv_fps = 30
 buffer_size = 10
 
 # process depth image per n frame
-num_depth_count = 0    # 0 for only rgb
+num_depth_count = 10    # 0 for only rgb
 
 # gesture sequence args
 seq_len = 16
@@ -56,7 +57,9 @@ prev_label = "init"
 def main():
     ###################### init models ######################
 
-    track_hand = HandTracker_our_v2()
+    track_hand_v1 = HandTracker_our()
+    track_hand_v2 = HandTracker_our_v2()
+    flag_hand_model = True
 
     track_gesture = GestureClassfier(ckpt=f"./gestureclassifier/checkpoints/{ckpt}", seq_len=seq_len, model_opt=1)
 
@@ -88,9 +91,18 @@ def main():
 
     debug_pose = np.ones((21, 3))
 
-    log_t = []
+    log_t = deque([], maxlen=50)
+    t1 = 0
     try:
         while True:
+            if flag_hand_model:
+                track_hand = track_hand_v2
+            else:
+                track_hand = track_hand_v1
+
+            if keyboard.is_pressed('space'):
+                flag_hand_model = not flag_hand_model
+
             idx+=1
 
             # intermittently receive depth image
@@ -101,11 +113,14 @@ def main():
             else:
                 flag_depth = False
 
+            # log_t.append(time.time() - t1)
+            # if len(log_t) > 10:
+            #     print(np.average(np.array(log_t)))
             ###################### receive input ######################
             result = receive_images(init_variables, flag_depth)
             if result == None:
                 continue
-
+            # t1 = time.time()
             color, depth = result
 
             ### Display RGBD pair ###
@@ -114,6 +129,8 @@ def main():
                 cv2.imshow('Depth', depth / max_depth)  # scale for visibility
             cv2.waitKey(1)
 
+            # print((time.time() - t1)*1000)
+            # continue
 
             color = cv2.resize(color, dsize=(640, 360), interpolation=cv2.INTER_AREA)
 

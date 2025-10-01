@@ -59,34 +59,34 @@ public class UdpModule : MonoBehaviour
                 double pythonTime = dataArray[64];
 
 
-                double unityTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); // ms 단위
-                double latency = unityTime - pythonTime;
+                // double unityTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); // ms 단위
+                // double latency = unityTime - pythonTime;
 
-                lock (latencyQueue)
-                {
-                    latencyQueue.Enqueue(latency);
-                    if (latencyQueue.Count > maxSamples)
-                        latencyQueue.Dequeue();
-                }
+                // lock (latencyQueue)
+                // {
+                //     latencyQueue.Enqueue(latency);
+                //     if (latencyQueue.Count > maxSamples)
+                //         latencyQueue.Dequeue();
+                // }
 
-                // 🔹 평균 계산
-                double avgLatency;
-                lock (latencyQueue)
-                {
-                    avgLatency = 0;
-                    foreach (var l in latencyQueue)
-                        avgLatency += l;
-                    avgLatency /= latencyQueue.Count;
-                }
+                // // 🔹 평균 계산
+                // double avgLatency;
+                // lock (latencyQueue)
+                // {
+                //     avgLatency = 0;
+                //     foreach (var l in latencyQueue)
+                //         avgLatency += l;
+                //     avgLatency /= latencyQueue.Count;
+                // }
 
 
-                // UI 업데이트는 메인 스레드에서만 가능하므로 변수에 저장
+                // // UI 업데이트는 메인 스레드에서만 가능하므로 변수에 저장
+
                 UnityMainThreadDispatcher.Instance().Enqueue(() =>
                 {
-                    timeText.text = $"Latency : {avgLatency:F2} ms";
+                    timeText.text = $"pythonTime : {pythonTime:F2} ms";
 
                 });
-
 
             }
             catch (SocketException ex)

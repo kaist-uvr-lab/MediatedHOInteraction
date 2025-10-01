@@ -22,7 +22,7 @@ matplotlib.use('TkAgg')  # 또는 'Qt5Agg', 'QtAgg'
 
 # ----------------------------------------------------------------------------------------------------------------------
 parser = argparse.ArgumentParser(description='DeepGRU Training')
-parser.add_argument('--ckpt', type=str, default="checkpoint.tar")       # checkpoint.tar --model -1
+parser.add_argument('--ckpt', type=str, default="checkpoint.tar-paper")       # checkpoint.tar --model -1
 parser.add_argument('--model', type=int, default=-1)        # 0: base, 1:ours, 2~6:ablation
 parser.add_argument('--use-cuda', action='store_true',
                     help='use CUDA if available',
@@ -356,6 +356,7 @@ def main():
 
     ## Confusion Matrix
     labels = ['Up', 'Down', 'Left', 'Right', 'Tap', 'Clock', 'CClock', 'Natural']
+    labels_ = ['Up', 'Down', 'Left', 'Right', 'Tap', 'Clock', 'CClock']
     fingers = ['Thumb', 'Index']
 
     for finger_idx in range(2):
@@ -367,31 +368,73 @@ def main():
             y_true_subj.append(perSubj[sname][finger_idx * 2])
             y_pred_subj.append(perSubj[sname][1 + finger_idx * 2])
 
+        # # original
+        # cms = []
+        # for y_true, y_pred in zip(y_true_subj, y_pred_subj):
+        #     cm = confusion_matrix(y_true, y_pred, labels=labels)
+        #     cms.append(cm)
+        #
+        # cms = np.array(cms)  # shape: (subj 수, 클래스수, 클래스수)
+        #
+        # cm_mean = np.mean(cms, axis=0)
+        # cm_std = np.std(cms, axis=0)
+        # cm_percent = cm_mean / cm_mean.sum(axis=1, keepdims=True) * 100
+        #
+        # annot = np.empty_like(cm_mean, dtype=object)
+        # for i in range(cm_mean.shape[0]):
+        #     for j in range(cm_mean.shape[1]):
+        #         if float(cm_mean[i, j]) < 0.1:
+        #             annot[i, j] = ""  # 0이면 비움
+        #         else:
+        #             annot[i, j] = f"{cm_mean[i, j]:.1f}\nsd: {cm_std[i, j]:.1f}\n{cm_percent[i, j]:.1f}%"
+        #
+        # sns.set(font_scale=0.9)
+        #
+        # df_cm = pd.DataFrame(cm_mean, index=labels, columns=labels)
+        # plt.figure(figsize=(10, 10))
+        # sns.heatmap(df_cm, annot=annot, fmt='', cmap='magma', vmin=0, vmax=10,
+        #             xticklabels=labels, yticklabels=labels)
+        #
+        # plt.xticks(fontsize=14)
+        # plt.yticks(fontsize=14)
+        #
+        # plt.xlabel('Predicted', fontsize=14)
+        # plt.ylabel('Actual', fontsize=14)
+        # plt.title(f"Confusion Matrix (mean ± sd) - {fingers[finger_idx]}", fontsize=16)
+        # plt.show()
+
         cms = []
         for y_true, y_pred in zip(y_true_subj, y_pred_subj):
-            cm = confusion_matrix(y_true, y_pred, labels=labels)
-            cms.append(cm)
+            # crosstab: index=Actual, columns=Predicted
+            cm = pd.crosstab(index=pd.Series(y_true, name="Actual"),
+                             columns=pd.Series(y_pred, name="Predicted"))
 
-        cms = np.array(cms)  # shape: (subj 수, 클래스수, 클래스수)
+            # 행·열 순서 강제 지정
+            cm = cm.reindex(index=labels_, columns=labels, fill_value=0)
+            cms.append(cm.values)
+
+        cms = np.array(cms)  # shape: (subj 수, len(labels), len(labels_))
 
         cm_mean = np.mean(cms, axis=0)
         cm_std = np.std(cms, axis=0)
         cm_percent = cm_mean / cm_mean.sum(axis=1, keepdims=True) * 100
 
+        # annot 생성
         annot = np.empty_like(cm_mean, dtype=object)
         for i in range(cm_mean.shape[0]):
             for j in range(cm_mean.shape[1]):
                 if float(cm_mean[i, j]) < 0.1:
-                    annot[i, j] = ""  # 0이면 비움
+                    annot[i, j] = ""
                 else:
                     annot[i, j] = f"{cm_mean[i, j]:.1f}\nsd: {cm_std[i, j]:.1f}\n{cm_percent[i, j]:.1f}%"
 
-        sns.set(font_scale=0.9)
+        # DataFrame으로 변환 (행=labels, 열=labels_)
+        df_cm = pd.DataFrame(cm_mean, index=labels_, columns=labels)
 
-        df_cm = pd.DataFrame(cm_mean, index=labels, columns=labels)
+        sns.set(font_scale=0.9)
         plt.figure(figsize=(10, 10))
         sns.heatmap(df_cm, annot=annot, fmt='', cmap='magma', vmin=0, vmax=10,
-                    xticklabels=labels, yticklabels=labels)
+                    xticklabels=labels, yticklabels=labels_)
 
         plt.xticks(fontsize=14)
         plt.yticks(fontsize=14)
