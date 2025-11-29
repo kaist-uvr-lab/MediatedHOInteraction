@@ -8,8 +8,25 @@ import websockets
 import struct
 import json
 from PIL import Image, ImageDraw, ImageFont
+import keyboard
 
-from modules import HandTracker_our, HandTracker_our_v2, GestureClassfier, ObjTracker
+try:
+    from numba import jit
+except ImportError:
+    print("Numba not installed. Depth filling loop might be slow. Consider installing with 'pip install numba'.")
+
+    def jit(*args, **kwargs):
+        def wrapper(func):
+            return func
+
+        return wrapper
+
+
+from modules import GestureClassfier, ObjTracker
+
+from handtracker.module_SARTE import HandTracker  # HandTracker_our (v1) 대체
+from handtracker_wilor.module_WILOR import HandTracker_wilor  # HandTracker_our_v2 (v2) 대체
+
 from collections import deque
 from utils.visualize import draw_2d_skeleton
 
@@ -21,44 +38,58 @@ import hl2ss_3dcv
 import hl2ss_utilities
 import socket
 import multiprocessing as mp
-import keyboard
-
 
 ## args ##
 ckpt = "checkpoint-40.tar"
 flag_interaction_detect = False
 
 ## Set HoloLens2 wifi address ##
-host = '192.168.50.31'
-
+HL2_HOST = '192.168.50.31'
+DATA_PORT = 5005
 
 # Calibration path (must exist but can be empty)
 calibration_path = 'calibration'
 
 # Front RGB camera parameters
-pv_width = 640      # (1080, 1920), (720, 1280), (360, 640), (240, 424)
-pv_height = 360
+PV_WIDTH = 640
+PV_HEIGHT = 360
 pv_fps = 30
 
 # Buffer length in seconds
 buffer_size = 10
 
 # process depth image per n frame
-num_depth_count = 10    # 0 for only rgb
+NUM_DEPTH_COUNT = 10  # 0 for only rgb
 
 # gesture sequence args
 seq_len = 16
-threshold_num = 5
+THRESHOLD_NUM = 5  # 연속된 제스처 인식이 유효하다고 판단하는 횟수
+COOLDOWN_SEC = 0.5  # 제스처 전송 쿨다운 시간
 
+# Interaction detection threshold
+HAND_OBJ_DIST_THRESHOLD = 70.0
 
 prev = time.time()
 prev_label = "init"
 
+
+@jit(nopython=True)
+def fill_depth_buffer(pv_z, pv_list, pv_list_depth):
+    for n in range(0, pv_list.shape[0]):
+        u0 = pv_list[n, 0]
+        v0 = pv_list[n, 1]
+        u1 = pv_list[n, 2]
+        v1 = pv_list[n, 3]
+
+        if u0 >= 0 and v0 >= 0 and u1 <= pv_z.shape[1] and v1 <= pv_z.shape[0]:
+            pv_z[v0:v1, u0:u1] = pv_list_depth[n]
+
+
 def main():
     ###################### init models ######################
 
-    track_hand_v1 = HandTracker_our()
-    track_hand_v2 = HandTracker_our_v2()
+    track_hand_v1 = HandTracker()  # SARTE 모듈
+    track_hand_v2 = HandTracker_wilor()  # WILOR 모듈
     flag_hand_model = True
 
     track_gesture = GestureClassfier(ckpt=f"./gestureclassifier/checkpoints/{ckpt}", seq_len=seq_len, model_opt=1)
@@ -68,10 +99,10 @@ def main():
 
     ###################### init comm. with hololens2 ######################
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    init_variables, max_depth, producer = init_hl2()
+    hl2_data, max_depth, producer = init_hl2(HL2_HOST)
 
     cv2.namedWindow('Prompt')
-    cv2.resizeWindow(winname='Prompt', width=500, height=500)
+    cv2.resizeWindow(winname='Prompt', width=PV_WIDTH, height=PV_HEIGHT)
     cv2.moveWindow(winname='Prompt', x=2000, y=200)
 
     idx_depth = 0
@@ -89,10 +120,6 @@ def main():
     valid_gesture = None
     valid_gesture_idx = -1
 
-    debug_pose = np.ones((21, 3))
-
-    log_t = deque([], maxlen=50)
-    t1 = 0
     try:
         while True:
             if flag_hand_model:
@@ -102,25 +129,23 @@ def main():
 
             if keyboard.is_pressed('space'):
                 flag_hand_model = not flag_hand_model
+                print(f"Hand Model Switched to {'v2 (WILOR)' if flag_hand_model else 'v1 (SARTE)'}")
 
-            idx+=1
+            idx += 1
 
-            # intermittently receive depth image
+            ### intermittently receive depth image
             idx_depth += 1
-            if idx_depth == num_depth_count:
+            if idx_depth >= NUM_DEPTH_COUNT:
                 idx_depth = 0
                 flag_depth = True
             else:
                 flag_depth = False
 
-            # log_t.append(time.time() - t1)
-            # if len(log_t) > 10:
-            #     print(np.average(np.array(log_t)))
             ###################### receive input ######################
-            result = receive_images(init_variables, flag_depth)
-            if result == None:
+            result = receive_images(hl2_data, flag_depth, PV_WIDTH, PV_HEIGHT)
+            if result is None:
                 continue
-            # t1 = time.time()
+
             color, depth = result
 
             ### Display RGBD pair ###
@@ -129,17 +154,14 @@ def main():
                 cv2.imshow('Depth', depth / max_depth)  # scale for visibility
             cv2.waitKey(1)
 
-            # print((time.time() - t1)*1000)
-            # continue
-
-            color = cv2.resize(color, dsize=(640, 360), interpolation=cv2.INTER_AREA)
+            # resize to model input size
+            color = cv2.resize(color, dsize=(PV_WIDTH, PV_HEIGHT), interpolation=cv2.INTER_AREA)
 
             ###################### process hand ######################
 
-            outs = track_hand.run(np.copy(color))   # uvd_right. return only right hand when visible
+            outs = track_hand.run(np.copy(color))  # uvd_right. return only right hand when visible
             if not isinstance(outs, np.ndarray):
                 continue
-
 
             ###################### process gesture ######################
             # preprocess joint pose
@@ -148,16 +170,11 @@ def main():
             queue_righthand.append(data)
 
             ###################### interaction prediction ######################
-            """
-            - 손 위치 depth로부터 10cm 내에서 detect된 물체 boundingbox만 체크
-            - palm 2D pose로부터 10cm 내에 물체 bb가 있으면 gesture recognizer 활성화. 
-            """
 
             if flag_depth and flag_interaction_detect:
-
                 uv_wrist = outs[0, :-1]
 
-                if int(uv_wrist[1]) > pv_height or int(uv_wrist[0]) > pv_width:
+                if int(uv_wrist[1]) >= PV_HEIGHT or int(uv_wrist[0]) >= PV_WIDTH:
                     flag_gesture = False
                 else:
                     d_wrist = depth[int(uv_wrist[1]), int(uv_wrist[0])]
@@ -165,11 +182,12 @@ def main():
                     palm_points_2d = outs[[0, 4, 8, 12, 16, 20], :2]
                     palm_uv = np.mean(palm_points_2d, axis=0)
 
-                    obj_nearby_list = track_obj.detect_objs_no_cnt(color, depth, d_wrist)
+                    obj_nearby_list = track_obj.detect_objs(color, depth, d_wrist, check_cooltime=False)
 
-                    # 손 근처 물체 BB 시각화.
                     if len(obj_nearby_list) > 0:
                         vis_obj = color.copy()
+                        flag_gesture = False
+
                         for obj_nearby in obj_nearby_list:
                             # draw every nearby object bb in green
                             cv2.rectangle(vis_obj, (obj_nearby[0], obj_nearby[1]), (obj_nearby[2], obj_nearby[3]),
@@ -177,12 +195,12 @@ def main():
                             cv2.putText(vis_obj, f'{obj_nearby[-1]}', (obj_nearby[0], obj_nearby[1] - 10),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-                        ## activate gesture recognizer ##
+                        ### activate gesture recognizer
                         for obj_nearby in obj_nearby_list:
                             cx, cy = (obj_nearby[0] + obj_nearby[2]) // 2, (obj_nearby[1] + obj_nearby[3]) // 2
                             distance = np.sqrt((cx - palm_uv[0]) ** 2 + (cy - palm_uv[1]) ** 2)
 
-                            if distance < 70.0:
+                            if distance < HAND_OBJ_DIST_THRESHOLD:
                                 # draw object bb if it's close to hand, as yellow
                                 cv2.rectangle(vis_obj, (obj_nearby[0], obj_nearby[1]), (obj_nearby[2], obj_nearby[3]),
                                               (0, 255, 255), 2)
@@ -192,24 +210,14 @@ def main():
 
                                 # if any of object are close to hand, flag_gesture is True and no need to iterate
                                 break
-                            else:
-                                flag_gesture = False
 
                         cv2.imshow("obj", vis_obj)
-                    # elif track_obj.flag_detected:  # off the gesture only when no nearby bb has found from obj detection
-                    #     flag_gesture = False
-
 
             if flag_gesture or not flag_interaction_detect:
                 if len(queue_righthand) < seq_len:
                     continue
 
-                # t1 = time.time()
                 gesture_idx, gesture = track_gesture.run(queue_righthand)  # queue (10, 63+15)
-                # log_t.append(time.time() - t1)
-                #
-                # if len(log_t) > 100:
-                #     print("avg : ", np.average(np.array(log_t)))
             else:
                 gesture = None
 
@@ -220,7 +228,7 @@ def main():
                 gesture_cnt = 0
             prev_gesture = gesture
 
-            if gesture_cnt > threshold_num:
+            if gesture_cnt > THRESHOLD_NUM:
                 valid_gesture = gesture
                 valid_gesture_idx = gesture_idx
 
@@ -235,47 +243,43 @@ def main():
             cv2.imshow("Prompt", color)
             cv2.waitKey(1)
 
-
             ###################### send to hololens2 ######################
             ## check cooldown. 0.5 sec delay for each gesture
-            if time.time() - t_cooldown > 0.5:
+            if time.time() - t_cooldown > COOLDOWN_SEC:
                 flag_cooldown = False
 
             if not flag_cooldown and valid_gesture != None and valid_gesture != "Natural":
 
-                send_data = outs.flatten().tolist() + [float(valid_gesture_idx), float(time.time()*1000)]
+                send_data = outs.flatten().tolist() + [float(valid_gesture_idx), float(time.time() * 1000)]
 
                 flag_cooldown = True
                 t_cooldown = time.time()
                 print("sending ... ", valid_gesture)
             else:
-                # dummy = np.asarray([debug_idx, float(-1)], dtype=np.float64)
-                # send_data = ["None", str(time.time()*1000)]
                 debug_pose = np.ones((63))
-
-                send_data = debug_pose.tolist() + [float(-1), float(time.time()*1000)]
+                send_data = debug_pose.tolist() + [float(-1), float(time.time() * 1000)]
 
             fmt = f"{len(send_data)}d"
             send_bytes = struct.pack(fmt, *send_data)
 
-            sock.sendto(send_bytes, (host, 5005))
+            sock.sendto(send_bytes, (HL2_HOST, DATA_PORT))
 
     finally:
         sock.close()
 
         # Stop PV and RM Depth AHAT streams ---------------------------------------
-        sink_ht, sink_pv = init_variables[0], init_variables[1]
+        sink_ht, sink_pv = hl2_data['sink_ht'], hl2_data['sink_pv']
         sink_pv.detach()
         sink_ht.detach()
         producer.stop(hl2ss.StreamPort.PERSONAL_VIDEO)
         producer.stop(hl2ss.StreamPort.RM_DEPTH_AHAT)
 
         # Stop PV subsystem -------------------------------------------------------
-        hl2ss_lnm.stop_subsystem_pv(host, hl2ss.StreamPort.PERSONAL_VIDEO)
+        hl2ss_lnm.stop_subsystem_pv(HL2_HOST, hl2ss.StreamPort.PERSONAL_VIDEO)
         cv2.destroyAllWindows()
 
 
-def init_hl2():
+def init_hl2(host):
     # Start PV Subsystem ------------------------------------------------------
     hl2ss_lnm.start_subsystem_pv(host, hl2ss.StreamPort.PERSONAL_VIDEO)
 
@@ -283,7 +287,7 @@ def init_hl2():
     # Calibration data will be downloaded if it's not in the calibration folder
     calibration_ht = hl2ss_3dcv.get_calibration_rm(host, hl2ss.StreamPort.RM_DEPTH_AHAT, calibration_path)
 
-    uv2xy = calibration_ht.uv2xy  # hl2ss_3dcv.compute_uv2xy(calibration_ht.intrinsics, hl2ss.Parameters_RM_DEPTH_AHAT.WIDTH, hl2ss.Parameters_RM_DEPTH_AHAT.HEIGHT)
+    uv2xy = calibration_ht.uv2xy
     xy1, scale = hl2ss_3dcv.rm_depth_compute_rays(uv2xy, calibration_ht.scale)
     max_depth = calibration_ht.alias / calibration_ht.scale
 
@@ -293,8 +297,8 @@ def init_hl2():
     # Start PV and RM Depth AHAT streams --------------------------------------
     producer = hl2ss_mp.producer()
     producer.configure(hl2ss.StreamPort.PERSONAL_VIDEO,
-                       hl2ss_lnm.rx_pv(host, hl2ss.StreamPort.PERSONAL_VIDEO, width=pv_width, height=pv_height,
-                                       framerate=pv_fps))
+                       hl2ss_lnm.rx_pv(host, hl2ss.StreamPort.PERSONAL_VIDEO, width=PV_WIDTH, height=PV_HEIGHT,
+                                       framerate=pv_fps))  # 상수 사용
     producer.configure(hl2ss.StreamPort.RM_DEPTH_AHAT, hl2ss_lnm.rx_rm_depth_ahat(host, hl2ss.StreamPort.RM_DEPTH_AHAT))
     producer.initialize(hl2ss.StreamPort.PERSONAL_VIDEO, pv_fps * buffer_size)
     producer.initialize(hl2ss.StreamPort.RM_DEPTH_AHAT, hl2ss.Parameters_RM_DEPTH_AHAT.FPS * buffer_size)
@@ -313,12 +317,28 @@ def init_hl2():
     pv_intrinsics = hl2ss.create_pv_intrinsics_placeholder()
     pv_extrinsics = np.eye(4, 4, dtype=np.float32)
 
-    return [sink_ht, sink_pv, pv_intrinsics, pv_extrinsics, xy1_o, xy1_d, scale, calibration_ht], max_depth, producer
+    hl2_data = {
+        'sink_ht': sink_ht,
+        'sink_pv': sink_pv,
+        'pv_intrinsics': pv_intrinsics,
+        'pv_extrinsics': pv_extrinsics,
+        'xy1_o': xy1_o,
+        'xy1_d': xy1_d,
+        'scale': scale,
+        'calibration_ht': calibration_ht
+    }
+    return hl2_data, max_depth, producer
 
 
-def receive_images(init_variables, flag_depth):
-
-    sink_ht, sink_pv, pv_intrinsics, pv_extrinsics, xy1_o, xy1_d, scale, calibration_ht = init_variables
+def receive_images(hl2_data: dict, flag_depth, pv_width, pv_height):
+    sink_ht = hl2_data['sink_ht']
+    sink_pv = hl2_data['sink_pv']
+    pv_intrinsics = hl2_data['pv_intrinsics']
+    pv_extrinsics = hl2_data['pv_extrinsics']
+    xy1_o = hl2_data['xy1_o']
+    xy1_d = hl2_data['xy1_d']
+    scale = hl2_data['scale']
+    calibration_ht = hl2_data['calibration_ht']
 
     # Get RM Depth AHAT frame and nearest (in time) PV frame --------------
     _, data_ht = sink_ht.get_most_recent_frame()
@@ -382,13 +402,7 @@ def receive_images(init_variables, flag_depth):
         pv_list = pv_list[maskf, :]
         pv_list_depth = pv_list_depth[maskf, 0]
 
-        for n in range(0, pv_list.shape[0]):
-            u0 = pv_list[n, 0]
-            v0 = pv_list[n, 1]
-            u1 = pv_list[n, 2]
-            v1 = pv_list[n, 3]
-
-            pv_z[v0:v1, u0:u1] = pv_list_depth[n]
+        fill_depth_buffer(pv_z, pv_list, pv_list_depth)
 
     return color, pv_z
 
@@ -401,6 +415,7 @@ def log_event(label, flag_time=False):
         print(f"{prev_label} ~ {label}: {now - prev:.3f}")
     prev_label = label
     prev = now
+
 
 if __name__ == '__main__':
     main()

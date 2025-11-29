@@ -3,8 +3,6 @@ import sys
 import cv2
 import time
 import numpy as np
-# from ultralytics import YOLO
-
 import torch
 import numpy as np
 import cv2
@@ -12,26 +10,23 @@ import mediapipe as mp
 from collections import deque
 from enum import Enum, IntEnum
 import copy
-
-# from tensorflow.keras.models import load_model
 from collections import deque
 from ultralytics import YOLO
-
 
 from handtracker.module_SARTE import HandTracker
 from handtracker_wilor.module_WILOR import HandTracker_wilor
 from gestureclassifier.model_update import create_model
 
-
 finger_joints = {
-        'thumb': [1, 2, 3, 4],
-        'index': [5, 6, 7, 8],
-        'middle': [9, 10, 11, 12],
-        'ring': [13, 14, 15, 16],
-        'pinky': [17, 18, 19, 20]
+    'thumb': [1, 2, 3, 4],
+    'index': [5, 6, 7, 8],
+    'middle': [9, 10, 11, 12],
+    'ring': [13, 14, 15, 16],
+    'pinky': [17, 18, 19, 20]
 }
 tip_joints = [4, 8, 12, 16, 20]
 baseline_variance = None
+
 
 class ObjTracker():
     def __init__(self, det_cooltime=10):
@@ -52,65 +47,25 @@ class ObjTracker():
         self.obj_cnt = 0
         self.flag_detected = False
 
-    def detect_objs(self, img, depth_image_float, d_wrist):
-        self.obj_cnt += 1
+    def detect_objs(self, img, depth_image_float, d_wrist, check_cooltime=True):
 
-        ## run YOLO when every cooltime
-        if self.obj_cnt > self.det_cooltime:
-            self.flag_detected = True
+        # 쿨타임 체크 로직
+        if check_cooltime:
+            self.obj_cnt += 1
+            if self.obj_cnt < self.det_cooltime:
+                self.flag_detected = False
+                return []
             self.obj_cnt = 0
-
-            mask = (depth_image_float > 0) & (depth_image_float - d_wrist <= 0.1)
-            mask = mask.astype(np.uint8) * 255
-            # masked_rgb = cv2.bitwise_and(img, img, mask=mask)
-
-            # 절반 사이즈로 YOLO 돌린후 결과*2
-            # resized_img = cv2.resize(img, (self.img_w // 2, self.img_h // 2), interpolation=cv2.INTER_AREA)
-            results = self.detector_obj(img, verbose=False)
-
-            # debug_vis = img.copy()
-            obj_bb_nearby = []
-            for result in results:
-                for box in result.boxes:
-                    cls = int(box.cls[0])
-                    label = result.names[cls]
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-
-                    # cv2.rectangle(debug_vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                    # cv2.putText(debug_vis, f"{label}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-                    if label == 'person':
-                        continue
-
-                    cx = (x1 + x2) // 2
-                    cy = (y1 + y2) // 2
-
-                    if mask[int(cy), int(cx)] == False:
-                        continue
-
-                    # x1, y1, x2, y2 = 2 * x1, 2 * y1, 2 * x2, 2 * y2
-                    obj_bb_nearby.append([x1, y1, x2, y2, label])
-
-            # cv2.imshow("debug", debug_vis)
-
-            return obj_bb_nearby
+            self.flag_detected = True
         else:
-            self.flag_detected = False
-            return []
-
-
-    def detect_objs_no_cnt(self, img, depth_image_float, d_wrist):
-        self.flag_detected = True
+            self.flag_detected = True
 
         mask = (depth_image_float > 0) & (depth_image_float - d_wrist <= 0.1)
         mask = mask.astype(np.uint8) * 255
-        # masked_rgb = cv2.bitwise_and(img, img, mask=mask)
 
-        # 절반 사이즈로 YOLO 돌린후 결과*2
-        # resized_img = cv2.resize(img, (self.img_w // 2, self.img_h // 2), interpolation=cv2.INTER_AREA)
+        # YOLO 실행
         results = self.detector_obj(img, verbose=False)
 
-        # debug_vis = img.copy()
         obj_bb_nearby = []
         for result in results:
             for box in result.boxes:
@@ -118,22 +73,17 @@ class ObjTracker():
                 label = result.names[cls]
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-                # cv2.rectangle(debug_vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                # cv2.putText(debug_vis, f"{label}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
                 if label == 'person':
                     continue
 
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
 
+                # Check if the object center is within the depth mask
                 if mask[int(cy), int(cx)] == False:
                     continue
 
-                # x1, y1, x2, y2 = 2 * x1, 2 * y1, 2 * x2, 2 * y2
                 obj_bb_nearby.append([x1, y1, x2, y2, label])
-
-        # cv2.imshow("debug", debug_vis)
 
         return obj_bb_nearby
 
@@ -143,7 +93,7 @@ class GestureClassfier():
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-        if model_opt == 0 or model_opt >=2 and model_opt < 6:
+        if model_opt == 0 or model_opt >= 2 and model_opt < 6:
             num_feature = 78
             self.flag_partial = False
         else:
@@ -152,7 +102,7 @@ class GestureClassfier():
 
         self.model_gesture = create_model(num_features=num_feature, num_classes=15, model_opt=model_opt)
 
-        checkpoint = torch.load(ckpt)
+        checkpoint = torch.load(ckpt, map_location=self.device)  # map_location 추가
         state_dict = checkpoint['model_state_dict']
 
         # "module." prefix가 있는지 확인
@@ -164,9 +114,11 @@ class GestureClassfier():
             new_state_dict = state_dict
 
         self.model_gesture.load_state_dict(new_state_dict)
-        self.model_gesture = torch.nn.DataParallel(self.model_gesture).cuda()
-        self.model_gesture.eval()
+        # --- [수정] DataParallel 제거 및 .to(self.device)로 교체 ---
+        self.model_gesture.to(self.device)
+        # self.model_gesture = torch.nn.DataParallel(self.model_gesture).cuda() # 기존 코드 제거
 
+        self.model_gesture.eval()
 
         # default args
         self.seq_len = seq_len
@@ -180,8 +132,6 @@ class GestureClassfier():
                              13: 'Up_index', 14: 'Up_thumb'}
         self.partial_idx = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 16, 17, 20]
 
-        # self.log_t = deque([], maxlen=100)
-
     def run(self, input):
         # input : queue (self.seq_len, 63+15)  -> ndarray (self.seq_len, 78)
         input = np.array(input).reshape(self.seq_len, -1)
@@ -193,15 +143,7 @@ class GestureClassfier():
         input = torch.from_numpy(input).to(self.device).unsqueeze(0).float()
 
         with torch.no_grad():
-            # t1 = time.time()
             output = self.model_gesture(input)
-        #     t2 = time.time()
-        #     self.log_t.append(t2 - t1)
-        #
-        # if len(self.log_t) == 100:
-        #     log_t = np.array(self.log_t)
-        #     avg = np.average(log_t)
-        #     print("avg t : ", avg)
 
         pred = output.argmax(1).cpu().numpy()
         gesture = self.idx_to_class[pred[0]]
@@ -211,9 +153,6 @@ class GestureClassfier():
     def _normalize(self, pts, norm_ratio_x=180.0, norm_ratio_y=180.0, norm_ratio_z=100.0):
         """
         Normalize a single sample
-
-        :param sample: the sample to normalize
-        :return: the normalized sample
         """
 
         pts = np.asarray(pts)
@@ -240,9 +179,6 @@ class GestureClassfier():
         return pts_norm
 
     def _extract_partialhand(self, pts_norm):
-        # set partial pts
-        # 0~4   5~8   9 12   13 16   17 20
-        # pts_norm : (seq_len, 63+15) -> (seq_len, 45+15)
         pts_norm = np.asarray(pts_norm)
         pts_norm_part = []
         for frame_idx in range(pts_norm.shape[0]):
@@ -273,71 +209,4 @@ class GestureClassfier():
         angle = np.degrees(angle)  # Convert radian to degree
 
         return angle
-
-
-class HandTracker_our_v2():
-    def __init__(self):
-        self.model_hand = HandTracker_wilor()
-
-    def run(self, input):
-        return self.model_hand.run(input)
-
-
-
-class HandTracker_our():
-    def __init__(self):
-        self.track_hand = HandTracker()
-
-    def run(self, input):
-        result_hand = self.track_hand.Process_single_newroi(input)
-
-        return result_hand
-
-
-# class HandTracker_mp():
-#     def __init__(self, ckpt=None):
-#
-#         # self.mp_drawing = mp.solutions.drawing_utils
-#         # self.mp_drawing_styles = mp.solutions.drawing_styles
-#         self.mp_hands = mp.solutions.hands
-#
-#         print("init hand tracker")
-#         torch.backends.cudnn.benchmark = True
-#         self.mediahand = self.mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.3)
-#
-#     def run(self, input):
-#         img_height = input.shape[0]
-#         img_width = input.shape[1]
-#
-#         input = cv2.flip(input, 1)
-#         results = self.mediahand.process(cv2.cvtColor(input, cv2.COLOR_BGR2RGB))
-#
-#         result_hand = []
-#         if results.multi_hand_landmarks == None:
-#             return None
-#
-#         for hand_landmarks in results.multi_hand_landmarks:
-#             for _, landmark in enumerate(hand_landmarks.landmark):
-#                 x = img_width - int(landmark.x * img_width)
-#                 y = int(landmark.y * img_height)
-#                 z = landmark.z
-#                 result_hand.append([x, y, z])
-#         result_hand = np.asarray(result_hand)
-#
-#         return result_hand
-
-
-# 0: 'person', 41: 'cup',
-"""
-{0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus', 6: 'train', 7: 'truck', 8: 'boat', 
-9: 'traffic light', 10: 'fire hydrant', 11: 'stop sign', 12: 'parking meter', 13: 'bench', 14: 'bird', 15: 'cat', 
-16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow', 20: 'elephant', 21: 'bear', 22: 'zebra', 23: 'giraffe', 24: 'backpack', 
-25: 'umbrella', 26: 'handbag', 27: 'tie', 28: 'suitcase', 29: 'frisbee', 30: 'skis', 31: 'snowboard', 32: 'sports ball', 
-33: 'kite', 34: 'baseball bat', 35: 'baseball glove', 36: 'skateboard', 37: 'surfboard', 38: 'tennis racket', 39: 'bottle',
- 40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife', 44: 'spoon', 45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich',
-  49: 'orange', 50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut', 55: 'cake', 56: 'chair', 57: 'couch',
-   58: 'potted plant', 59: 'bed', 60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse', 65: 'remote', 
-   66: 'keyboard', 67: 'cell phone', 68: 'microwave', 69: 'oven', 70: 'toaster', 71: 'sink', 72: 'refrigerator', 
-   73: 'book', 74: 'clock', 75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 79: 'toothbrush'}
-"""
 
