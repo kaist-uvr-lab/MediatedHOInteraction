@@ -44,7 +44,7 @@ ckpt = "checkpoint-40.tar"
 flag_interaction_detect = False
 
 ## Set HoloLens2 wifi address ##
-HL2_HOST = '192.168.50.31'
+HL2_HOST = '192.168.0.112'
 DATA_PORT = 5005
 
 # Calibration path (must exist but can be empty)
@@ -88,7 +88,7 @@ def fill_depth_buffer(pv_z, pv_list, pv_list_depth):
 def main():
     ###################### init models ######################
 
-    track_hand_v1 = HandTracker()  # SARTE 모듈
+    # track_hand_v1 = HandTracker()  # SARTE 모듈 # 동시에 정의하면 결과가 이상함. 해결 필요.
     track_hand_v2 = HandTracker_wilor()  # WILOR 모듈
     flag_hand_model = True
 
@@ -125,7 +125,7 @@ def main():
             if flag_hand_model:
                 track_hand = track_hand_v2
             else:
-                track_hand = track_hand_v1
+                track_hand = track_hand_v2
 
             if keyboard.is_pressed('space'):
                 flag_hand_model = not flag_hand_model
@@ -234,6 +234,7 @@ def main():
 
             ###################### visualize ######################
             color = draw_2d_skeleton(color, outs[:, :2])
+            print("log : ", outs[:, :2])
 
             if valid_gesture != None and valid_gesture != "Natural":
                 cv2.putText(color, f'{valid_gesture.upper()}',
